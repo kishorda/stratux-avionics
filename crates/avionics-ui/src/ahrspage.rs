@@ -119,6 +119,7 @@ pub fn draw(
     }
 
     draw_slip_skid(ui, canvas, state, cx, cy, radius);
+    draw_side_readouts(ui, canvas, state, layout, cx, cy, radius);
     draw_readouts(ui, canvas, state, layout, top);
     draw_banner(ui, canvas, layout, bottom);
 
@@ -369,6 +370,89 @@ fn draw_failure(
     let _ = canvas.fill_text(cx, cy + radius * 0.22, failure.detail(), &paint);
 }
 
+/// Which altitude source a reading came from.
+///
+/// The label follows the source rather than the other way round. Falling back from baro to GPS
+/// under a fixed "ALT" caption would silently change what the number means — GPS MSL and pressure
+/// altitude disagree by the local altimeter setting, which is exactly the error you would not
+/// want to discover by reading it off a display that did not mention the swap.
+enum AltSource {
+    Baro(f32),
+    Gps(f32),
+    None,
+}
+
+fn altitude_source(state: &AppState) -> AltSource {
+    match (
+        state.ownship.pressure_altitude_ft,
+        state.ownship.altitude_msl_ft,
+    ) {
+        (Some(baro), _) => AltSource::Baro(baro),
+        (None, Some(gps)) => AltSource::Gps(gps),
+        (None, None) => AltSource::None,
+    }
+}
+
+/// Ground speed on the left, altitude on the right — speed-left/altitude-right is the layout
+/// every glass panel uses, so it costs nothing to learn and is where the eye already goes.
+///
+/// Both are placed outside the instrument circle rather than over it: an attitude indicator with
+/// numbers painted across the horizon is harder to read at a glance in turbulence, and the whole
+/// point of the round gauge is that its picture reads pre-attentively.
+fn draw_side_readouts(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    state: &AppState,
+    layout: &Layout,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+) {
+    let theme = &ui.theme;
+
+    let mut caption = Paint::color(theme.text_dim);
+    caption.set_font(&[ui.font()]);
+    caption.set_font_size(theme.font_size_tag);
+    caption.set_text_baseline(Baseline::Bottom);
+
+    let mut value = Paint::color(theme.text_primary);
+    value.set_font(&[ui.font()]);
+    value.set_font_size(theme.font_size_large);
+    value.set_text_baseline(Baseline::Top);
+
+    // Ground speed, left. GPS-derived, so it is present whenever there is a fix and absent
+    // otherwise — never a zero standing in for "unknown".
+    caption.set_text_align(Align::Left);
+    value.set_text_align(Align::Left);
+    let left = layout.margin;
+    let gs = state
+        .ownship
+        .ground_speed_kt
+        .map(|v| format!("{v:.0}"))
+        .unwrap_or_else(|| "---".into());
+    let _ = canvas.fill_text(left, cy - 6.0, "GS kt", &caption);
+    let _ = canvas.fill_text(left, cy - 2.0, &gs, &value);
+
+    // Altitude, right, captioned with the sensor it actually came from.
+    caption.set_text_align(Align::Right);
+    value.set_text_align(Align::Right);
+    let right = layout.content_width - layout.margin;
+    let (cap, text) = match altitude_source(state) {
+        AltSource::Baro(ft) => ("BARO ft", format!("{ft:.0}")),
+        AltSource::Gps(ft) => ("GPS ft", format!("{ft:.0}")),
+        AltSource::None => ("ALT ft", "---".to_string()),
+    };
+    let _ = canvas.fill_text(right, cy - 6.0, cap, &caption);
+    let _ = canvas.fill_text(right, cy - 2.0, &text, &value);
+
+    // Keep the numbers clear of the instrument: if the panel is ever narrow enough that they
+    // would collide with the circle, the circle is what shrinks, not the readouts.
+    debug_assert!(
+        cx - radius >= left,
+        "instrument overlaps the ground-speed readout"
+    );
+}
+
 /// Numeric readouts along the top of the instrument area.
 fn draw_readouts(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout, top: f32) {
     let theme = &ui.theme;
@@ -564,5 +648,30 @@ mod tests {
     fn absent_readouts_print_dashes_never_zero() {
         assert_eq!(fmt_deg(None), "---");
         assert_eq!(fmt_deg(Some(0.0)), "+0.0\u{00B0}");
+    }
+}
+
+#[cfg(test)]
+mod side_readout_tests {
+    use super::*;
+    use stratux_client::AppState;
+
+    #[test]
+    fn altitude_is_captioned_with_the_sensor_it_came_from() {
+        let mut state = AppState::new();
+
+        // Baro wins when present: it is what traffic reports, so it is the like-for-like number.
+        state.ownship.pressure_altitude_ft = Some(4800.0);
+        state.ownship.altitude_msl_ft = Some(5000.0);
+        assert!(matches!(altitude_source(&state), AltSource::Baro(v) if v == 4800.0));
+
+        // Without a pressure sensor the number is GPS MSL — and the caption must say so rather
+        // than silently relabelling it, since the two differ by the altimeter setting.
+        state.ownship.pressure_altitude_ft = None;
+        assert!(matches!(altitude_source(&state), AltSource::Gps(v) if v == 5000.0));
+
+        // No fix at all: dashes, never a zero.
+        state.ownship.altitude_msl_ft = None;
+        assert!(matches!(altitude_source(&state), AltSource::None));
     }
 }
