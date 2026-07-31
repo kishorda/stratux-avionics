@@ -386,6 +386,58 @@ enum AltSource {
     None,
 }
 
+/// Where a directional reading came from, and therefore what it actually means.
+///
+/// These are **not interchangeable**, which is why the caption changes with the source rather
+/// than everything being labelled `HDG`:
+///
+/// * Magnetic heading is where the nose points, referenced to magnetic north.
+/// * Gyro heading is where the nose points, but integrated and free to drift.
+/// * GPS ground track is where the aircraft is *going*, which in any crosswind is a different
+///   number — tens of degrees apart in a strong one. Showing it captioned `HDG` would be a
+///   plain lie, and the wind is exactly when someone would be looking.
+///
+/// On the target both AHRS heading fields read the 3276.7 sentinel, so `Track` is the live case.
+enum HeadingSource {
+    Mag(f64),
+    Gyro(f64),
+    Track(f64),
+    None,
+}
+
+fn heading_source(state: &AppState) -> HeadingSource {
+    let ahrs = &state.ownship.ahrs;
+    if let Some(v) = ahrs.mag_heading_deg {
+        HeadingSource::Mag(v)
+    } else if let Some(v) = ahrs.gyro_heading_deg {
+        HeadingSource::Gyro(v)
+    } else if let Some(v) = state.ownship.track_deg {
+        HeadingSource::Track(v as f64)
+    } else {
+        HeadingSource::None
+    }
+}
+
+impl HeadingSource {
+    fn caption(&self) -> &'static str {
+        match self {
+            Self::Mag(_) => "HDG mag",
+            Self::Gyro(_) => "HDG gyro",
+            Self::Track(_) => "TRK gps",
+            Self::None => "HDG",
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Self::Mag(v) | Self::Gyro(v) | Self::Track(v) => {
+                format!("{:03.0}\u{00B0}", v.rem_euclid(360.0))
+            }
+            Self::None => "---".into(),
+        }
+    }
+}
+
 fn altitude_source(state: &AppState) -> AltSource {
     match (
         state.ownship.pressure_altitude_ft,
@@ -424,30 +476,75 @@ fn draw_side_readouts(
     value.set_font_size(theme.font_size_large);
     value.set_text_baseline(Baseline::Top);
 
-    // Ground speed, left. GPS-derived, so it is present whenever there is a fix and absent
-    // otherwise — never a zero standing in for "unknown".
-    caption.set_text_align(Align::Left);
-    value.set_text_align(Align::Left);
+    // Two per side, stacked either side of the instrument's vertical centre. Speed and track go
+    // left, altitude and vertical speed right, keeping each pair with the quantity it belongs to.
+    // Wide enough apart that the lower caption does not crowd the upper value: at this size the
+    // two nearly touch at 0.9, and a caption read as part of the number above it is worse than
+    // wasted space.
+    let upper = cy - theme.font_size_large * 1.25;
+    let lower = cy + theme.font_size_large * 1.25;
+
+    let mut cell = |canvas: &mut Canvas,
+                    x: f32,
+                    y: f32,
+                    align: Align,
+                    cap: &str,
+                    text: &str| {
+        caption.set_text_align(align);
+        value.set_text_align(align);
+        let _ = canvas.fill_text(x, y - 4.0, cap, &caption);
+        let _ = canvas.fill_text(x, y, text, &value);
+    };
+
     let left = layout.margin;
+    let right = layout.content_width - layout.margin;
+
+    // Ground speed. GPS-derived, so it is present whenever there is a fix and absent otherwise —
+    // never a zero standing in for "unknown".
     let gs = state
         .ownship
         .ground_speed_kt
         .map(|v| format!("{v:.0}"))
         .unwrap_or_else(|| "---".into());
-    let _ = canvas.fill_text(left, cy - 6.0, "GS kt", &caption);
-    let _ = canvas.fill_text(left, cy - 2.0, &gs, &value);
+    cell(canvas, left, upper, Align::Left, "GS kt", &gs);
 
-    // Altitude, right, captioned with the sensor it actually came from.
-    caption.set_text_align(Align::Right);
-    value.set_text_align(Align::Right);
-    let right = layout.content_width - layout.margin;
+    // Direction, captioned with what it actually is. See `HeadingSource`: on this hardware the
+    // AHRS heading fields are unavailable, so this is normally GPS ground track.
+    let heading = heading_source(state);
+    cell(
+        canvas,
+        left,
+        lower,
+        Align::Left,
+        heading.caption(),
+        &heading.text(),
+    );
+
+    // Altitude, captioned with the sensor it came from.
     let (cap, text) = match altitude_source(state) {
         AltSource::Baro(ft) => ("BARO ft", format!("{ft:.0}")),
         AltSource::Gps(ft) => ("GPS ft", format!("{ft:.0}")),
         AltSource::None => ("ALT ft", "---".to_string()),
     };
-    let _ = canvas.fill_text(right, cy - 6.0, cap, &caption);
-    let _ = canvas.fill_text(right, cy - 2.0, &text, &value);
+    cell(canvas, right, upper, Align::Right, cap, &text);
+
+    // Vertical speed. Unlike altitude this needs no source caption: baro and GPS vertical speed
+    // measure the same quantity and differ in smoothness, not in meaning, whereas pressure
+    // altitude and GPS MSL differ by the altimeter setting. The decoder already prefers baro.
+    //
+    // Signed always, including the plus: an unsigned "300" next to an altitude is ambiguous at a
+    // glance, and which way you are going is the entire point of the number.
+    let vs = state
+        .ownship
+        .vertical_speed_fpm
+        .map(|v| {
+            // Round to 50 fpm. The raw figure jitters by tens of feet per minute on a MEMS
+            // sensor, and a readout whose last digit never settles is one you stop trusting.
+            let rounded = (v / 50.0).round() * 50.0;
+            format!("{:+.0}", rounded)
+        })
+        .unwrap_or_else(|| "---".into());
+    cell(canvas, right, lower, Align::Right, "VS fpm", &vs);
 
     // Keep the numbers clear of the instrument: if the panel is ever narrow enough that they
     // would collide with the circle, the circle is what shrinks, not the readouts.
@@ -503,15 +600,6 @@ fn draw_readouts(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout
         "G",
         ahrs.g_load
             .map(|g| format!("{g:.2}"))
-            .unwrap_or_else(|| "---".into()),
-    );
-    field(
-        canvas,
-        &mut x,
-        "HDG",
-        ahrs.mag_heading_deg
-            .or(ahrs.gyro_heading_deg)
-            .map(|h| format!("{:03.0}\u{00B0}", h.rem_euclid(360.0)))
             .unwrap_or_else(|| "---".into()),
     );
 }
@@ -659,6 +747,36 @@ mod tests {
 mod side_readout_tests {
     use super::*;
     use stratux_client::AppState;
+
+    #[test]
+    fn direction_is_captioned_by_what_it_actually_is() {
+        let mut state = AppState::new();
+
+        // Nothing available: dashes, not a north-pointing zero.
+        assert!(matches!(heading_source(&state), HeadingSource::None));
+        assert_eq!(heading_source(&state).text(), "---");
+
+        // GPS track is the live case on this hardware, and must NOT be captioned HDG: track and
+        // heading differ by the wind, which is exactly when someone would be reading it.
+        state.ownship.track_deg = Some(57.0);
+        assert!(matches!(heading_source(&state), HeadingSource::Track(_)));
+        assert_eq!(heading_source(&state).caption(), "TRK gps");
+        assert_eq!(heading_source(&state).text(), "057\u{00B0}");
+
+        // A real heading outranks track when the sensor supplies one.
+        state.ownship.ahrs.mag_heading_deg = Some(120.0);
+        assert!(matches!(heading_source(&state), HeadingSource::Mag(_)));
+        assert_eq!(heading_source(&state).caption(), "HDG mag");
+    }
+
+    #[test]
+    fn headings_wrap_into_zero_to_three_sixty() {
+        let mut state = AppState::new();
+        state.ownship.ahrs.mag_heading_deg = Some(-10.0);
+        assert_eq!(heading_source(&state).text(), "350\u{00B0}");
+        state.ownship.ahrs.mag_heading_deg = Some(370.0);
+        assert_eq!(heading_source(&state).text(), "010\u{00B0}");
+    }
 
     #[test]
     fn altitude_is_captioned_with_the_sensor_it_came_from() {
