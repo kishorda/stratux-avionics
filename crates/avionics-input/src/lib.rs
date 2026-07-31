@@ -4,13 +4,29 @@
 //! machine. The panel is fixed, single-orientation and has exactly two gestures to recognise, so
 //! libinput's device-quirk database and configuration surface would be cost without benefit.
 //!
-//! # Untested on hardware
+//! # Hardware status
 //!
-//! This module cannot be exercised without the panel. The event decoding follows the Linux
-//! multi-touch protocol (slots addressed by `ABS_MT_SLOT`, lifetimes delimited by
-//! `ABS_MT_TRACKING_ID`), but the axis ranges, whether the controller emits `BTN_TOUCH`, and the
-//! device name all need confirming against the real `edt-ft5406`. `deploy/m0-survey.sh` captures
-//! the device name and `/proc/bus/input/devices` output needed to check this.
+//! Confirmed on the target (Pi 3B v1.2, Hysong 7" DSI, `vc4-kms-dsi-7inch`, 2026-07-31):
+//!
+//! ```text
+//! device = "10-0038 generic ft5x06 (79)"   path = /dev/input/event2
+//! x = (0.0, 799.0)                         y = (0.0, 479.0)
+//! ```
+//!
+//! Note the driver names it `ft5x06`, **not** `ft5406` — the overlay's driver is `edt_ft5x06`
+//! and it labels the device by i2c address and chip family. Searching `/proc/bus/input/devices`
+//! for "ft5406" or "touch" finds nothing on this panel, which looks exactly like a missing
+//! device. `NAME_HINTS` below covers both spellings for that reason.
+//!
+//! The axis ranges are 0..=799 by 0..=479, i.e. the controller reports in panel pixels and the
+//! scaling into screen coordinates is the identity here. Do not simplify the scaling away: it is
+//! a property of this panel, not of the protocol, and the 1024x600 variants of this class of
+//! panel do not share it.
+//!
+//! Still unconfirmed, because it needs an actual finger rather than an SSH session: whether the
+//! controller emits `BTN_TOUCH`, how many slots it reports, and whether `ABS_MT_TRACKING_ID`
+//! lifetimes behave as the decoding below assumes. The gesture state machine is therefore still
+//! unproven, even though device discovery and scaling are not.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,12 +44,20 @@ pub enum Gesture {
     TwoFingerTap,
 }
 
-/// Substrings matched against device names, in preference order.
+/// Substrings matched against device names, lowercased.
 ///
-/// The 7" DSI panel's controller is exposed by the `edt-ft5406` driver bundled into the
-/// `vc4-kms-dsi-7inch` overlay. Matching on the name rather than on an `eventN` number matters:
-/// event numbers reorder across boots depending on USB probe order, and the two SDRs make that
-/// ordering genuinely unstable.
+/// The panel's controller is exposed by the `edt_ft5x06` driver bundled into the
+/// `vc4-kms-dsi-7inch` overlay, and on the target it names itself
+/// `"10-0038 generic ft5x06 (79)"` — matched here by `"ft5x06"`.
+///
+/// Matching on the name rather than on an `eventN` number matters: event numbers reorder across
+/// boots depending on probe order, and the two SDRs plus a USB keyboard make that ordering
+/// genuinely unstable. On the target the touchscreen currently lands on `event2`, behind the
+/// two `vc4-hdmi` ALSA/CEC inputs, so hardcoding `event0` would find an HDMI jack.
+///
+/// These are alternatives, not preferences: the search below takes the first *candidate device*
+/// matching any of them, so the order of this list has no effect. Keep `"touch"` last anyway —
+/// it is the loosest and would be the one to drop first if it ever mismatched.
 const NAME_HINTS: &[&str] = &["ft5406", "ft5x06", "edt-ft5x06", "generic ft5x06", "touch"];
 
 /// Ignore a touch as a tap if the finger moved further than this, in device units scaled to
@@ -81,7 +105,9 @@ impl TouchReader {
         if candidates.is_empty() {
             return Err(anyhow!(
                 "no multitouch device found. Check that dtoverlay=vc4-kms-dsi-7inch is set and \
-                 that dtoverlay=rpi-ft5406 is NOT (they conflict)."
+                 that dtoverlay=rpi-ft5406 is NOT (they conflict). Without the KMS overlay the \
+                 firmware touch path presents as `raspberrypi-ts` instead, which this does not \
+                 use. Confirm with: grep -i ft5x06 /proc/bus/input/devices"
             ));
         }
 
