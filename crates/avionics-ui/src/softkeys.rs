@@ -66,6 +66,9 @@ pub fn keys_for(page: Page) -> [Option<SoftKey>; SLOTS] {
             None,
             None,
         ],
+        // Attitude has nothing to adjust: there is no range, no scroll, and no orientation. The
+        // slots stay dimmed rather than being filled with something invented to occupy them.
+        Page::Ahrs => [Some(SoftKey::Page), None, None, None, None],
     }
 }
 
@@ -189,7 +192,7 @@ mod tests {
 
     #[test]
     fn page_key_is_in_the_same_slot_on_every_page() {
-        for page in [Page::PlanView, Page::Weather] {
+        for page in [Page::PlanView, Page::Weather, Page::Ahrs] {
             assert_eq!(keys_for(page)[PAGE_SLOT], Some(SoftKey::Page));
         }
     }
@@ -256,6 +259,13 @@ mod tests {
         let before = label(SoftKey::ToggleOrientation, &view);
         view.toggle_orientation();
         assert_ne!(before, label(SoftKey::ToggleOrientation, &view));
+    }
+
+    #[test]
+    fn the_attitude_page_offers_only_page() {
+        let keys = keys_for(Page::Ahrs);
+        assert_eq!(keys[PAGE_SLOT], Some(SoftKey::Page));
+        assert!(keys[1..].iter().all(Option::is_none), "nothing to adjust on attitude");
     }
 
     #[test]

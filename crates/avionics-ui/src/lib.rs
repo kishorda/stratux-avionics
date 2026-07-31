@@ -18,6 +18,7 @@
 //!   Instant (for dead reckoning)
 //! ```
 
+pub mod ahrspage;
 pub mod font;
 pub mod interact;
 pub mod nexrad;
@@ -51,13 +52,18 @@ pub enum Page {
     PlanView,
     /// FIS-B text products.
     Weather,
+    /// Attitude from the AHRS, if a sensor is fitted.
+    Ahrs,
 }
 
 impl Page {
     pub fn next(self) -> Self {
         match self {
             Self::PlanView => Self::Weather,
-            Self::Weather => Self::PlanView,
+            Self::Weather => Self::Ahrs,
+            // Traffic is the page that matters most, so the cycle always returns there rather
+            // than leaving the attitude page as a place you can get stuck one key press from.
+            Self::Ahrs => Self::PlanView,
         }
     }
 
@@ -65,6 +71,7 @@ impl Page {
         match self {
             Self::PlanView => "TFC",
             Self::Weather => "WX",
+            Self::Ahrs => "AHRS",
         }
     }
 }
@@ -196,6 +203,13 @@ impl Ui {
             Page::PlanView => self.draw_plan_view(canvas, state, view, now, &layout),
             Page::Weather => {
                 weatherpage::draw(self, canvas, state, view, now, &layout);
+                FrameStats {
+                    targets_no_position: state.non_positional_count(),
+                    ..Default::default()
+                }
+            }
+            Page::Ahrs => {
+                ahrspage::draw(self, canvas, state, now, &layout);
                 FrameStats {
                     targets_no_position: state.non_positional_count(),
                     ..Default::default()

@@ -395,8 +395,11 @@ fn tapping_the_status_bar_switches_page() {
     let mut view = ViewState::default();
     assert_eq!(view.page, Page::PlanView);
 
+    // Three pages now, so a full cycle is three presses.
     tap(&mut view, &l, 400.0, 4.0, 8, 0);
     assert_eq!(view.page, Page::Weather);
+    tap(&mut view, &l, 400.0, 4.0, 8, 0);
+    assert_eq!(view.page, Page::Ahrs);
     tap(&mut view, &l, 400.0, 4.0, 8, 0);
     assert_eq!(view.page, Page::PlanView);
 }

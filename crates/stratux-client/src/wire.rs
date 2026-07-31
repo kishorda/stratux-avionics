@@ -120,8 +120,12 @@ pub struct SituationData {
     pub BaroTemperature: f32,
     pub BaroSourceType: u8,
 
-    // No IMU is fitted on this build, so these stay at their defaults. Declared anyway so a
-    // future AHRS addition is a domain change rather than a wire change.
+    // An IMU IS fitted on this build: the target reports live pitch, roll, slip and G-load.
+    // (An earlier comment here claimed otherwise, following the plan rather than the hardware.)
+    //
+    // Absent readings arrive as the in-band sentinel 3276.7, not as a missing field or a zero —
+    // on this target the gyro heading, mag heading and turn rate all read 3276.7 while the rest
+    // are live. `domain::Ahrs::value` maps that to `None`; nothing should read these directly.
     pub AHRSPitch: f64,
     pub AHRSRoll: f64,
     pub AHRSGyroHeading: f64,
@@ -129,6 +133,8 @@ pub struct SituationData {
     pub AHRSSlipSkid: f64,
     pub AHRSTurnRate: f64,
     pub AHRSGLoad: f64,
+    pub AHRSGLoadMin: f64,
+    pub AHRSGLoadMax: f64,
     pub AHRSStatus: u8,
 }
 

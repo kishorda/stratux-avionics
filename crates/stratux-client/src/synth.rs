@@ -176,7 +176,7 @@ pub fn generate(config: &SynthConfig) -> Vec<Frame> {
         frames.push(frame(
             Stream::Situation,
             offset_ms,
-            &situation(config, ownship_pos, ownship_track),
+            &situation(config, ownship_pos, ownship_track, t_ms),
         ));
 
         if t_ms >= next_traffic_ms {
@@ -248,7 +248,18 @@ fn frame<T: serde::Serialize>(stream: Stream, offset_ms: u64, value: &T) -> Fram
     }
 }
 
-fn situation(config: &SynthConfig, position: LatLon, track_deg: f64) -> wire::SituationData {
+fn situation(
+    config: &SynthConfig,
+    position: LatLon,
+    track_deg: f64,
+    t_ms: u64,
+) -> wire::SituationData {
+    let t = t_ms as f64 / 1000.0;
+    // Slow, shallow oscillation: enough to prove the horizon moves and in which direction,
+    // without pretending to model flight dynamics.
+    let pitch = 2.5 * (t * 0.11).sin();
+    let roll = 12.0 * (t * 0.07).sin();
+
     wire::SituationData {
         GPSLatitude: position.lat as f32,
         GPSLongitude: position.lon as f32,
@@ -266,9 +277,28 @@ fn situation(config: &SynthConfig, position: LatLon, track_deg: f64) -> wire::Si
         GPSTrueCourse: track_deg.rem_euclid(360.0) as f32,
         GPSGroundSpeed: config.ground_speed_kt,
         GPSPositionSampleRate: 10.0,
-        // No pressure sensor on this build, so BaroSourceType stays 0 and the decoder falls
-        // back to GPS altitude — exactly what happens on the real aircraft.
-        BaroSourceType: 0,
+        // The target DOES have a pressure sensor (it reports BaroSourceType 1), so synthetic
+        // sessions carry one too and exercise the pressure-altitude path the aircraft uses.
+        BaroSourceType: 1,
+        BaroPressureAltitude: config.start_altitude_ft - 40.0,
+        BaroVerticalSpeed: 0.0,
+        BaroTemperature: 12.0,
+
+        // AHRS, mirroring what the target actually reports: live pitch/roll/slip/G-load, and the
+        // 3276.7 "no reading" sentinel for gyro heading, mag heading and turn rate. Emitting the
+        // sentinel rather than zeros matters — zeros would decode as a valid wings-level attitude
+        // and hide exactly the bug the AHRS page exists to prevent.
+        AHRSPitch: pitch,
+        AHRSRoll: roll,
+        AHRSSlipSkid: 1.5 * (t * 0.09).cos(),
+        AHRSGLoad: 1.0 + 0.03 * (t * 0.13).sin(),
+        AHRSGLoadMin: 0.94,
+        AHRSGLoadMax: 1.07,
+        AHRSGyroHeading: crate::domain::AHRS_INVALID,
+        AHRSMagHeading: crate::domain::AHRS_INVALID,
+        AHRSTurnRate: crate::domain::AHRS_INVALID,
+        // Non-zero: a module is reporting. Zero would mean "no AHRS fitted".
+        AHRSStatus: 6,
         ..Default::default()
     }
 }

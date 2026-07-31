@@ -22,6 +22,12 @@ pub struct Theme {
 
     pub ownship: Color,
 
+    /// Artificial-horizon sky and ground. Muted rather than saturated: this sits on a panel read
+    /// in daylight, and a vivid blue/brown next to amber traffic symbols costs contrast where it
+    /// matters more.
+    pub ahrs_sky: Color,
+    pub ahrs_ground: Color,
+
     pub target_normal: Color,
     pub target_advisory: Color,
     pub target_alert: Color,
@@ -59,6 +65,8 @@ impl Theme {
             compass_tick: Color::rgba(120, 200, 245, 170),
 
             ownship: Color::rgb(120, 255, 170),
+            ahrs_sky: Color::rgb(38, 96, 150),
+            ahrs_ground: Color::rgb(112, 74, 38),
 
             target_normal: Color::rgb(220, 235, 245),
             target_advisory: Color::rgb(255, 200, 40),

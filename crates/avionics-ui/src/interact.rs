@@ -66,6 +66,9 @@ pub fn tap(view: &mut ViewState, layout: &Layout, x: f32, y: f32, weather_rows: 
             // silently changed the range scale. Now that there is a dedicated RNG key, the body
             // does nothing on the plan view.
             Page::PlanView => {}
+            // Nothing on the attitude page is adjustable, and an instrument that reacts to being
+            // brushed is worse than one that does not react at all.
+            Page::Ahrs => {}
             Page::Weather => scroll_weather(view, zone, weather_rows, weather_total),
         },
     }
@@ -94,8 +97,8 @@ pub fn apply_key(
 pub fn two_finger_tap(view: &mut ViewState) {
     match view.page {
         Page::PlanView => view.toggle_orientation(),
-        // Nothing sensible to toggle on the text page; do nothing rather than invent a behaviour.
-        Page::Weather => {}
+        // Nothing sensible to toggle on these; do nothing rather than invent a behaviour.
+        Page::Weather | Page::Ahrs => {}
     }
 }
 
@@ -179,16 +182,37 @@ mod tests {
     }
 
     #[test]
-    fn page_key_is_in_the_same_place_on_both_pages() {
+    fn page_key_cycles_every_page_from_one_fixed_spot() {
         let l = layout();
         let mut view = ViewState::default();
         let (x, y) = key_point(&l, softkeys::PAGE_SLOT);
 
+        // The same coordinates must walk the whole cycle and return, or there is no reliable way
+        // out of a page you did not mean to be on.
         tap(&mut view, &l, x, y, 5, 0);
         assert_eq!(view.page, Page::Weather);
-        // Same coordinates must get us back, or there is no reliable way out of a wrong page.
         tap(&mut view, &l, x, y, 5, 0);
-        assert_eq!(view.page, Page::PlanView);
+        assert_eq!(view.page, Page::Ahrs);
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.page, Page::PlanView, "the cycle must return to traffic");
+    }
+
+    #[test]
+    fn the_attitude_page_ignores_body_taps_entirely() {
+        let l = layout();
+        let mut view = ViewState {
+            page: Page::Ahrs,
+            ..Default::default()
+        };
+        let before = view.clone();
+        for y in [l.height * 0.35, l.height * 0.5, l.height * 0.65] {
+            tap(&mut view, &l, l.content_width * 0.5, y, 5, 0);
+        }
+        assert_eq!(view.page, before.page);
+        assert_eq!(view.range_nm, before.range_nm);
+        // Two fingers must not toggle orientation from here either.
+        two_finger_tap(&mut view);
+        assert_eq!(view.orientation, before.orientation);
     }
 
     #[test]

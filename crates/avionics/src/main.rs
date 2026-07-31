@@ -59,6 +59,7 @@ View
   --range NM           initial range ring: 2, 5, 10, 20, 40  [default: 10]
   --track-up           start in track-up instead of north-up
   --weather-page       start on the FIS-B text page
+  --ahrs-page          start on the attitude page
   --no-underlay        don't draw the NEXRAD precipitation underlay
 
 Other
@@ -145,6 +146,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--frames" => args.frames = value()?.parse().context("bad --frames")?,
             "--track-up" => args.view.orientation = Orientation::TrackUp,
             "--weather-page" => args.view.page = avionics_ui::Page::Weather,
+            "--ahrs-page" => args.view.page = avionics_ui::Page::Ahrs,
             "--no-underlay" => args.view.show_weather_underlay = false,
             "--range" => {
                 let v: f32 = value()?.parse().context("bad --range")?;

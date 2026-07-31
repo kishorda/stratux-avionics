@@ -446,3 +446,75 @@ fn decodes_status() {
     assert!((s.cpu_temp_c - 62.4).abs() < 1e-4);
     assert_eq!(s.errors.len(), 1);
 }
+
+// --- AHRS ------------------------------------------------------------------------------------
+
+/// Build a `/situation` payload with the given AHRS fields.
+fn situation_json(status: u8, pitch: f64, roll: f64) -> String {
+    format!(
+        r#"{{"GPSFixQuality":2,"GPSLatitude":40.0,"GPSLongitude":-105.0,
+            "AHRSStatus":{status},"AHRSPitch":{pitch},"AHRSRoll":{roll},
+            "AHRSSlipSkid":0.0,"AHRSGLoad":1.0,
+            "AHRSGyroHeading":3276.7,"AHRSMagHeading":3276.7,"AHRSTurnRate":3276.7}}"#
+    )
+}
+
+fn decode_ownship(json: &str) -> stratux_client::domain::OwnShip {
+    let now = Instant::now();
+    match decode(Stream::Situation, json.as_bytes(), now).unwrap().unwrap() {
+        Event::OwnShip(o) => o,
+        other => panic!("expected OwnShip, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_ahrs_invalid_sentinel_becomes_none_not_a_3276_degree_heading() {
+    let ownship = decode_ownship(&situation_json(6, 2.5, -4.0));
+    assert_eq!(ownship.ahrs.pitch_deg, Some(2.5));
+    assert_eq!(ownship.ahrs.roll_deg, Some(-4.0));
+    // These three read 3276.7 on the real target.
+    assert_eq!(ownship.ahrs.gyro_heading_deg, None);
+    assert_eq!(ownship.ahrs.mag_heading_deg, None);
+    assert_eq!(ownship.ahrs.turn_rate_deg_s, None);
+}
+
+#[test]
+fn a_status_of_zero_blanks_every_field_not_just_the_attitude() {
+    // A Stratux with no AHRS module leaves these at Go's zero value, so 0.0 pitch and 0.0 roll
+    // look exactly like a genuine wings-level reading. Gating only `attitude()` once produced a
+    // screen reading "AHRS UNAVAILABLE" over the horizon while the numbers below it reported
+    // PITCH +0.0 / ROLL +0.0 / HDG 000 — the display contradicting itself.
+    let ownship = decode_ownship(&situation_json(0, 0.0, 0.0));
+    let a = &ownship.ahrs;
+    assert_eq!(a.attitude(), None);
+    assert_eq!(a.pitch_deg, None);
+    assert_eq!(a.roll_deg, None);
+    assert_eq!(a.slip_skid_deg, None, "the slip ball must not be drawn either");
+    assert_eq!(a.g_load, None);
+    assert_eq!(a.status, 0);
+}
+
+#[test]
+fn a_genuine_level_attitude_still_reads_as_a_measurement() {
+    // The mirror of the test above: with a module reporting, 0.0 means level, not missing.
+    let ownship = decode_ownship(&situation_json(6, 0.0, 0.0));
+    assert_eq!(ownship.ahrs.attitude(), Some((0.0, 0.0)));
+}
+
+#[test]
+fn pressure_altitude_is_used_when_a_baro_sensor_is_present() {
+    // The target reports BaroSourceType 1, so this is the live path, not a hypothetical one.
+    let with_baro = decode_ownship(
+        r#"{"GPSFixQuality":2,"GPSLatitude":40.0,"GPSLongitude":-105.0,
+            "GPSAltitudeMSL":5000.0,"BaroSourceType":1,"BaroPressureAltitude":4800.0}"#,
+    );
+    assert_eq!(with_baro.pressure_altitude_ft, Some(4800.0));
+    assert_eq!(with_baro.comparison_altitude_ft(), Some(4800.0));
+
+    let without = decode_ownship(
+        r#"{"GPSFixQuality":2,"GPSLatitude":40.0,"GPSLongitude":-105.0,
+            "GPSAltitudeMSL":5000.0,"BaroSourceType":0,"BaroPressureAltitude":4800.0}"#,
+    );
+    assert_eq!(without.pressure_altitude_ft, None, "no sensor means no reading");
+    assert_eq!(without.comparison_altitude_ft(), Some(5000.0), "falls back to GPS MSL");
+}

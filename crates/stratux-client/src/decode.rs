@@ -11,7 +11,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 
 use crate::domain::{
-    GpsFix, LatLon, NexradBlock, NexradKind, OwnShip, SystemStatus, Target, TargetType,
+    Ahrs, GpsFix, LatLon, NexradBlock, NexradKind, OwnShip, SystemStatus, Target, TargetType,
     TrafficSource, WeatherProduct, WeatherText,
 };
 use crate::wire;
@@ -181,8 +181,9 @@ fn ownship_from_wire(raw: &wire::SituationData, now: Instant) -> OwnShip {
     let candidate = LatLon::new(raw.GPSLatitude as f64, raw.GPSLongitude as f64);
     let position = (usable && candidate.is_plausible()).then_some(candidate);
 
-    // BaroSourceType 0 means no pressure sensor. This build has none, so pressure altitude is
-    // normally absent and relative altitudes fall back to GPS MSL.
+    // BaroSourceType 0 means no pressure sensor. This build HAS one (the target reports type 1),
+    // so pressure altitude is normally present and traffic comparisons are like-for-like. The
+    // gate stays because a build without the sensor must still fall back to GPS MSL.
     let has_baro = raw.BaroSourceType != 0;
 
     OwnShip {
@@ -203,6 +204,48 @@ fn ownship_from_wire(raw: &wire::SituationData, now: Instant) -> OwnShip {
         },
         horizontal_accuracy_m: usable.then_some(raw.GPSHorizontalAccuracy),
         turn_rate_deg_s: usable.then_some(raw.GPSTurnRate),
+        ahrs: ahrs_from_wire(raw, now),
+        received: Some(now),
+    }
+}
+
+/// Pull attitude out of the same `/situation` message.
+///
+/// Every field goes through [`Ahrs::value`], which maps Stratux's 3276.7 sentinel to `None`.
+/// Doing it here rather than at the draw site means no drawing code can ever forget: the domain
+/// type simply has no way to express "3276.7 degrees of roll".
+fn ahrs_from_wire(raw: &wire::SituationData, now: Instant) -> Ahrs {
+    // No module reporting: discard every field rather than gating only the ones the attitude
+    // indicator happens to read.
+    //
+    // A Stratux without an AHRS leaves these at Go's zero value, so pitch, roll, slip and G-load
+    // all arrive as a plausible-looking 0.0. Gating just `attitude()` produced a screen that
+    // showed "AHRS UNAVAILABLE" across the horizon while the numeric readouts underneath it
+    // confidently reported PITCH +0.0, ROLL +0.0, HDG 000 — the display contradicting itself,
+    // with the wrong half being the more precise-looking one. Zeroing at the boundary means no
+    // consumer, present or future, can read a value that was never measured.
+    if raw.AHRSStatus == 0 {
+        return Ahrs {
+            status: 0,
+            received: Some(now),
+            ..Default::default()
+        };
+    }
+
+    Ahrs {
+        pitch_deg: Ahrs::value(raw.AHRSPitch),
+        roll_deg: Ahrs::value(raw.AHRSRoll),
+        slip_skid_deg: Ahrs::value(raw.AHRSSlipSkid),
+        turn_rate_deg_s: Ahrs::value(raw.AHRSTurnRate),
+        g_load: Ahrs::value(raw.AHRSGLoad),
+        g_load_min: Ahrs::value(raw.AHRSGLoadMin),
+        g_load_max: Ahrs::value(raw.AHRSGLoadMax),
+        gyro_heading_deg: Ahrs::value(raw.AHRSGyroHeading),
+        mag_heading_deg: Ahrs::value(raw.AHRSMagHeading),
+        status: raw.AHRSStatus,
+        // Timestamped on arrival, not from AHRSLastAttitudeTime: that field is a Go zero-time
+        // ("0001-01-01T...") on this target, so it says nothing about freshness. Arrival time is
+        // what actually answers "has the sensor stopped talking to us".
         received: Some(now),
     }
 }

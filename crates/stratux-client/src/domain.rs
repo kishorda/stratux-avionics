@@ -4,7 +4,7 @@
 //! `Option` rather than a sentinel zero, and Stratux's integer codes become enums. If upstream
 //! renames a field, only [`crate::decode`] changes.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A geographic position in decimal degrees, north/east positive.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,6 +147,106 @@ impl TargetType {
     }
 }
 
+/// Attitude from Stratux's AHRS, if a sensor is fitted.
+///
+/// # Every field is `Option`, and that is the whole point
+///
+/// Stratux reports "no reading" as the in-band sentinel **3276.7** (int16 max, scaled by ten)
+/// rather than by omitting the field. Read naively, a display shows a 3276.7 degree heading and
+/// looks authoritative doing it. On the target the pitch, roll, slip and G-load are live while
+/// gyro heading, mag heading and turn rate all read 3276.7 — so this is the normal case, not an
+/// edge case. [`Ahrs::value`] converts every sentinel to `None`.
+///
+/// # This is not a certified attitude reference
+///
+/// Stratux's AHRS is an uncalibrated MEMS sensor with no redundancy, no failure annunciation
+/// beyond what is inferred here, and no protection against gradual drift. It is worth showing as
+/// a cross-check and worth nothing as a primary reference. Anything drawing this must say so on
+/// screen, and must show an unmistakable failure indication rather than a level horizon when the
+/// data is missing or stale — a synthetic level horizon is the one output that could actively
+/// mislead a pilot.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Ahrs {
+    /// Degrees, positive nose-up.
+    pub pitch_deg: Option<f64>,
+    /// Degrees, positive right-wing-down.
+    pub roll_deg: Option<f64>,
+    /// Degrees of lateral acceleration, positive ball-right. Drives the slip/skid indicator.
+    pub slip_skid_deg: Option<f64>,
+    /// Degrees per second.
+    pub turn_rate_deg_s: Option<f64>,
+    /// Multiples of g.
+    pub g_load: Option<f64>,
+    pub g_load_min: Option<f64>,
+    pub g_load_max: Option<f64>,
+    /// Degrees true, integrated from the gyro. Frequently unavailable.
+    pub gyro_heading_deg: Option<f64>,
+    /// Degrees magnetic. Needs a calibrated magnetometer, so frequently unavailable.
+    pub mag_heading_deg: Option<f64>,
+    /// Stratux's raw status word, surfaced rather than interpreted. The bit meanings are not
+    /// documented in the wire protocol notes, so guessing at them would be inventing information.
+    pub status: u8,
+    pub received: Option<Instant>,
+}
+
+/// Stratux's in-band "no reading" value: `i16::MAX` scaled by ten.
+pub const AHRS_INVALID: f64 = 3276.7;
+
+impl Ahrs {
+    /// Convert one wire value, mapping the sentinel and any non-finite value to `None`.
+    ///
+    /// The comparison is a tolerance rather than equality: the value survives a float32 leg on
+    /// the wire and a widen to f64, so it does not necessarily arrive as exactly 3276.7.
+    pub fn value(raw: f64) -> Option<f64> {
+        if !raw.is_finite() || (raw - AHRS_INVALID).abs() < 0.05 {
+            None
+        } else {
+            Some(raw)
+        }
+    }
+
+    /// Is there a usable attitude to draw?
+    ///
+    /// Pitch **and** roll, both present, with a non-zero status word. An attitude indicator with
+    /// only one of them is not a degraded attitude indicator, it is a wrong one.
+    ///
+    /// # Why `status != 0` is part of the test
+    ///
+    /// A Stratux with no AHRS module leaves these fields at Go's zero value, and `0.0` pitch with
+    /// `0.0` roll is indistinguishable from a genuine wings-level reading. Taken at face value
+    /// that paints a confident level horizon for an aircraft that could be in any attitude at all
+    /// — the single worst output this program could produce.
+    ///
+    /// The status word breaks the tie: it is 0 when no module is reporting and non-zero when one
+    /// is (6 on the target). The exact bit meanings are not documented in the wire protocol notes
+    /// and are deliberately not guessed at here. Treating 0 as "no AHRS" errs toward showing the
+    /// failure flag on a working unit, which is the direction to be wrong in.
+    ///
+    /// `crate::decode` already blanks every field when the status is 0, so this check is a
+    /// backstop for values constructed directly — in tests, or by any future code path that does
+    /// not come through the decoder.
+    pub fn attitude(&self) -> Option<(f64, f64)> {
+        if self.status == 0 {
+            return None;
+        }
+        match (self.pitch_deg, self.roll_deg) {
+            (Some(pitch), Some(roll)) => Some((pitch, roll)),
+            _ => None,
+        }
+    }
+
+    /// Has the attitude gone stale? Treated as unusable by the page.
+    ///
+    /// Stratux publishes `/situation` at 10 Hz, so a whole second of silence already means
+    /// something is wrong upstream.
+    pub fn is_stale(&self, now: Instant, limit: Duration) -> bool {
+        match self.received {
+            Some(t) => now.saturating_duration_since(t) > limit,
+            None => true,
+        }
+    }
+}
+
 /// Own-ship state.
 #[derive(Debug, Clone, Default)]
 pub struct OwnShip {
@@ -156,7 +256,8 @@ pub struct OwnShip {
     pub satellites_seen: u16,
     /// Feet above mean sea level, from GPS.
     pub altitude_msl_ft: Option<f32>,
-    /// Feet, from a pressure sensor if one is fitted. This build has none, so usually `None`.
+    /// Feet, from a pressure sensor if one is fitted. Present on this build: the target reports
+    /// `BaroSourceType: 1`. Gated on that field, so a build without the sensor still gets `None`.
     pub pressure_altitude_ft: Option<f32>,
     /// Degrees true.
     pub track_deg: Option<f32>,
@@ -165,6 +266,8 @@ pub struct OwnShip {
     pub vertical_speed_fpm: Option<f32>,
     pub horizontal_accuracy_m: Option<f32>,
     pub turn_rate_deg_s: Option<f64>,
+    /// Attitude, when a sensor is fitted. Arrives on the same `/situation` message.
+    pub ahrs: Ahrs,
     pub received: Option<Instant>,
 }
 
