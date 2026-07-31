@@ -15,15 +15,19 @@ and how to run it.
 
 | Milestone | What | State |
 | --- | --- | --- |
-| M0 | Hardware & OS bring-up survey | `deploy/m0-survey.sh` ready to run |
-| M1 | Rendering spike — go/no-go on the stack | **code complete, needs running on the Pi** |
+| M0 | Hardware & OS bring-up survey | **partly done** — display/touch/CPU surveyed; **no SDRs or GPS attached yet** |
+| M1 | Rendering spike — go/no-go on the stack | **PASSED on hardware** — see [M0/M1 results](#m0--m1-results-on-hardware) |
 | M2 | Presenter abstraction + interactive dev harness | **done** — offscreen + interactive window |
-| M3 | Stratux client + replay harness | **done except live-Pi verification** |
-| M4 | Traffic plan view | **done except on-panel verification** (touch untested without hardware) |
-| M5 | Weather: text page + NEXRAD underlay | **done except validation against an independent mosaic** |
+| M3 | Stratux client + replay harness | **done**; all five sockets connect on the Pi, but no radios means no live traffic yet |
+| M4 | Traffic plan view | **renders on the panel from replay**; gestures still unproven, frame cost unmeasured under radio load |
+| M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; still unvalidated against an independent mosaic |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 
 94 tests passing, clippy clean.
+
+The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS,
+GLES2, panel, touch discovery, all five Stratux sockets, 60 fps with the full scene. What is
+not proven is anything needing the radios, a finger, or a human looking at the screen.
 
 ## Layout
 
@@ -38,15 +42,193 @@ tools/replay            record / synth / stats / play CLI
 deploy/                 install, hardening and on-hardware test harnesses
 ```
 
+## Getting a shell on the Pi
+
+The Stratux image runs its own WiFi AP and has **no route to the internet**. That shapes
+everything below: nothing here may assume the Pi can reach an archive, and the dev machine
+cannot reach the Pi and the internet at the same time if it joins the Stratux AP.
+
+Wired ethernet solves it. The Pi 3B's built-in NIC (`0424:ec00`, USB-attached) sits on the
+same LAN as the dev machine, so both keep their own connectivity.
+
+`10.0.0.240` appears throughout this README as the Pi's address. It is an example — substitute
+a free address on your own LAN. It is written out rather than left as `<pi>` so the commands
+are copy-pasteable, and `stratux.local` is deliberately not used: mDNS does not resolve on
+this setup, and a hostname that silently fails to resolve is worse than an address you must
+edit.
+
+### Bring up eth0 and give it an address
+
+`eth0` comes up **DOWN** on this image and **there is no DHCP client installed** — so the
+usual `dhclient`/`dhcpcd` advice does not apply, and you cannot install one without the
+network you are trying to obtain. A static address needs neither.
+
+At the Pi's console (a USB keyboard is enough):
+
+```sh
+sudo ip link set eth0 up
+sudo ip addr replace 10.0.0.240/24 dev eth0     # pick a free address on your LAN
+ip -br addr show eth0                            # confirm UP and the address
+```
+
+**Do not add a default route and do not touch `/etc/resolv.conf`.** Same-subnet traffic needs
+neither, and a default route via `eth0` risks disturbing the AP routing Stratux manages. The
+Pi stays without internet, which is the assumption the rest of the tooling is built on.
+
+Diagnosing `DOWN`, if it does not come up:
+
+```sh
+ip -br link show eth0                # NO-CARRIER = cable/port; neither UP nor NO-CARRIER = admin-down
+cat /sys/class/net/eth0/carrier      # 1 = link present
+```
+
+### Make it survive a reboot
+
+The commands above are lost on reboot. This unit restores them, and nothing else:
+
+```sh
+sudo tee /etc/systemd/system/eth0-static.service >/dev/null <<'EOF'
+[Unit]
+Description=Static address on eth0 for development access
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip link set eth0 up
+ExecStart=/sbin/ip addr replace 10.0.0.240/24 dev eth0
+ExecStop=/sbin/ip addr del 10.0.0.240/24 dev eth0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now eth0-static.service
+```
+
+Two deliberate choices. `ip addr replace`, not `ip addr add`: `add` fails with `EEXIST` when
+the address is already present, which for a `Type=oneshot` unit means a failed service and no
+ethernet — and it would fail at exactly the moment you cannot afford it to, the first reboot.
+`replace` is idempotent, so the unit can be started and proven immediately. And a bare `ip`
+unit rather than enabling `systemd-networkd` or installing NetworkManager: it touches `eth0`
+and nothing else, so it cannot interfere with the AP Stratux manages.
+
+This is a development convenience. Remove it before the box flies.
+
+### Then key-based SSH
+
+```sh
+ssh-keygen -t ed25519 -C "dev -> stratux"        # if you have no key
+ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@10.0.0.240
+```
+
+If `ssh-copy-id` reports `ssh_askpass: ... No such file or directory`, it is being run
+without a TTY and never actually prompted. Either run it in a real terminal, or append the
+public key to `~/.ssh/authorized_keys` at the Pi's console.
+
+## M0 / M1 results on hardware
+
+Measured 2026-07-31 on the target: Pi 3B v1.2, Stratux 2.0-pre4, kernel `6.6.74+rpt-rpi-v8`,
+Hysong 7" DSI panel.
+
+### M1 — the go/no-go
+
+```
+resolution : 800x480
+vendor     : Broadcom
+renderer   : VC4 V3D 2.1
+version    : OpenGL ES 2.0 Mesa 24.2.8-1~bpo12+rpt5
+GLES2 path : true
+frames     : 300
+last fps   : 60.0
+```
+
+**`GLES2 path : true` is the result the whole project was waiting on.** femtovg's README
+claims "OpenGl (ES) 3.0+", and the stack rested on the claim that its *runtime* ES2 detection
+(`version.starts_with("OpenGL ES 2.")`) actually works on `vc4`. It does. The Slint
+`linuxkms` fallback is not needed.
+
+### Frame cost with the full scene
+
+Replaying a synthetic 120 s session — 14 targets including a head-on conflict, 72 NEXRAD
+blocks, 0 decode errors:
+
+| | mean draw | worst draw |
+| --- | --- | --- |
+| With NEXRAD underlay | **2.14 ms** | 51.03 ms |
+| Without underlay | **2.12 ms** | 45.75 ms |
+
+Mean draw is ~13% of the 16.7 ms budget at 60 Hz. The underlay costs essentially nothing on
+average and ~6 ms in the worst case.
+
+The ~44 ms worst case is **startup, not a recurring hitch**. Three runs of different lengths
+show a roughly constant frame deficit rather than one that scales with duration:
+
+```
+ 30 s    1166 frames    worst 44.65 ms
+125 s    6727 frames    worst 51.03 ms
+240 s   13748 frames    worst 44.21 ms
+```
+
+`last fps` reads 60.0 in all three. Do not read an instantaneous `last fps` of 50.0 as
+sustained drops — that is a sample landing during a NEXRAD composite.
+
+NEXRAD geo-referencing: `21 drawn, 0 outside, 542 bins`. Every block landed inside the
+projection, which is the failure that looks plausible while being wrong.
+
+### 60 fps despite the EMI underclock
+
+`config.txt` carries `sdram_freq=450`, `core_freq=450`, `arm_freq=900` — deliberate
+underclocks from Stratux issue #573 that reduce EMI. **Do not raise them**: on this box they
+protect SDR and GPS reception. `core_freq=450` caps GPU throughput, and it was expected to
+cost frames at 800x480. It does not.
+
+### M0 survey
+
+| | |
+| --- | --- |
+| dpkg architecture | `arm64` → `aarch64-unknown-linux-gnu` |
+| Panel | DSI-1, **800x480@60**, `tc358762` bridge + `rpi_panel_attiny_regulator` |
+| Touch | `10-0038 generic ft5x06 (79)` on `/dev/input/event2`, x `0..=799`, y `0..=479` |
+| CMA | 131072 kB after `cma-128` |
+| glibc | 2.36 (`2.36-9+rpt2+deb12u9`) — the ceiling `check-glibc.sh` enforces |
+| Idle load | 0.24, ~49 °C, `throttled=0x0` |
+| SDRs | **none attached** |
+| GPS | **none attached**, no `/dev/ttyACM0` |
+
+Three things the image did **not** have, all fixed by `deploy/push-packages.sh`:
+
+- **No Mesa at all** — no `libgbm.so.1`, no `libEGL`, no `dri/`. The cross-built binary links
+  fine and then cannot exec. This is why `/dev/dri` was missing as much as the overlay was.
+- **No `vc4-kms-v3d` overlay** in `config.txt`. See [`deploy/enable-kms.md`](deploy/enable-kms.md).
+- **No fonts.** The image ships none; `fonts-dejavu-core` is required.
+
+The Hysong panel works under `vc4-kms-dsi-7inch` — that was rated the likeliest failure and
+it was not one. Note the touch driver names the device **`ft5x06`, not `ft5406`**: grepping
+`/proc/bus/input/devices` for "ft5406" or "touch" finds nothing and looks exactly like a
+missing device.
+
+### What is still unproven
+
+- **Radio contention.** `dump1090`/`dump978` are not running, so "the renderer starves the
+  radios" — the plan's real failure mode — is entirely unmeasured. 2.14 ms on an idle Pi is
+  encouraging, not conclusive.
+- **Gestures.** Device discovery and coordinate scaling are confirmed; `BTN_TOUCH`, slot
+  count and `ABS_MT_TRACKING_ID` lifetimes need a finger. `touch: OK` in `--check` means the
+  device opened, not that tap and two-finger-tap work.
+- **Everything visual.** 13,748 frames rendered without error says nothing about whether the
+  symbology, tags, threat colouring or precipitation actually look right.
+
 ## Deploying to the Pi
 
 Order matters. Each step is idempotent and says how to undo itself.
 
 ```sh
 # From the dev machine:
-ssh pi@stratux.local 'bash -s' < deploy/m0-survey.sh | tee m0-survey.txt
+ssh pi@10.0.0.240 'bash -s' < deploy/m0-survey.sh | tee m0-survey.txt
 ./deploy/sync-sysroot.sh --offline            # one-time, ~270 MB, no Pi needed
-./deploy/deploy.sh       pi@stratux.local     # cross-build and push
+./deploy/deploy.sh       pi@10.0.0.240        # cross-build and push
 
 # On the Pi (deploy.sh puts the scripts in /tmp/avionics-deploy alongside the binary):
 sudo /tmp/avionics --check                                    # verify before wiring anything up
@@ -247,6 +429,10 @@ M1 answers one question on real hardware: **does femtovg's OpenGL ES 2.0 path wo
 Pi 3's `vc4` driver, rendered straight to DRM/KMS?** Everything else is built on that
 assumption, so it gets verified first.
 
+**It does — see [M0/M1 results](#m0--m1-results-on-hardware).** The spike is kept because it
+is the fastest way to re-answer the question after a Mesa, kernel or overlay change, and
+because it isolates the graphics stack from everything else when something breaks.
+
 On the dev machine (headless, writes an image — no Pi and no DRM master needed):
 
 ```sh
@@ -257,8 +443,8 @@ On the Pi, from a console with no X/Wayland running:
 
 ```sh
 ./deploy/sync-sysroot.sh --offline            # one-time, ~270 MB, no Pi needed
-./deploy/deploy.sh       pi@stratux.local
-ssh -t pi@stratux.local 'sudo /tmp/gfx-spike'
+./deploy/deploy.sh       pi@10.0.0.240
+ssh -t pi@10.0.0.240 'sudo /tmp/gfx-spike'
 ```
 
 ## Building the cross sysroot when the Pi has no internet
@@ -269,7 +455,7 @@ the runtime Mesa the image already ships — so they are fetched here instead:
 
 ```sh
 ./deploy/sync-sysroot.sh --offline        # recommended: never contacts the Pi
-./deploy/sync-sysroot.sh pi@stratux.local # mirrors the real machine (see caveat below)
+./deploy/sync-sysroot.sh pi@10.0.0.240     # mirrors the real machine (see caveat below)
 ```
 
 `--offline` downloads Debian Bookworm packages for the target architecture from
