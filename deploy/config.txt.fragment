@@ -10,18 +10,22 @@
 #   * Never mix `vc4-kms-*` with `vc4-fkms-*`.
 
 # --- Display + GPU -----------------------------------------------------------------------
-# Full KMS driver. Required: the app renders through DRM/KMS and needs a real atomic-capable
-# vc4 driver, not the firmware-mediated fkms one.
-dtoverlay=vc4-kms-v3d
+# Full KMS driver, with contiguous memory for scanout buffers. The Pi 3 has only 1 GB total
+# and vc4 allocates framebuffers from CMA, so the size is set here as a parameter.
+#
+# This MUST be one line. An earlier version of this file listed `dtoverlay=vc4-kms-v3d` and
+# `dtoverlay=vc4-kms-v3d,cma-128` separately, which instantiates the same overlay twice —
+# the exact duplicate-dtoverlay mistake warned about at the top of this file.
+#
+# cma-128 costs 128 MB of the Pi 3's 1 GB. For an 800x480 panel the buffers themselves need
+# far less (~1.5 MB each), but femtovg's glyph atlas and the NEXRAD mosaic are GEM objects
+# and come from the same pool. Drop to cma-64 if memory pressure shows up.
+dtoverlay=vc4-kms-v3d,cma-128
 
 # 7" DSI panel. Bundles the edt-ft5406 touch controller, so no separate touch overlay.
 # Orientation params if the panel is mounted rotated: invx, invy, swapxy
 #   e.g. dtoverlay=vc4-kms-dsi-7inch,invx,invy   (180 degrees)
 dtoverlay=vc4-kms-dsi-7inch
-
-# Contiguous memory for scanout buffers. The Pi 3 has only 1 GB total, and vc4 allocates
-# framebuffers from CMA; the default is tight once two SDRs are also running.
-dtoverlay=vc4-kms-v3d,cma-128
 
 # --- Boot time ---------------------------------------------------------------------------
 disable_splash=1
