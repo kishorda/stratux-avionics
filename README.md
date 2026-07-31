@@ -45,7 +45,7 @@ Order matters. Each step is idempotent and says how to undo itself.
 ```sh
 # From the dev machine:
 ssh pi@stratux.local 'bash -s' < deploy/m0-survey.sh | tee m0-survey.txt
-./deploy/sync-sysroot.sh pi@stratux.local     # one-time, ~300 MB
+./deploy/sync-sysroot.sh --offline            # one-time, ~270 MB, no Pi needed
 ./deploy/deploy.sh       pi@stratux.local     # cross-build and push
 
 # On the Pi (deploy.sh puts the scripts in /tmp/avionics-deploy alongside the binary):
@@ -256,10 +256,64 @@ cargo run -p gfx-spike -- --offscreen --out /tmp/spike.ppm
 On the Pi, from a console with no X/Wayland running:
 
 ```sh
-./deploy/sync-sysroot.sh pi@stratux.local     # one-time, ~300 MB
+./deploy/sync-sysroot.sh --offline            # one-time, ~270 MB, no Pi needed
 ./deploy/deploy.sh       pi@stratux.local
 ssh -t pi@stratux.local 'sudo /tmp/gfx-spike'
 ```
+
+## Building the cross sysroot when the Pi has no internet
+
+The Pi sits on its own WiFi AP with no route out, so `apt-get install` on the target cannot
+work. The `-dev` packages are a *build-time* artifact anyway — the display itself needs only
+the runtime Mesa the image already ships — so they are fetched here instead:
+
+```sh
+./deploy/sync-sysroot.sh --offline        # recommended: never contacts the Pi
+./deploy/sync-sysroot.sh pi@stratux.local # mirrors the real machine (see caveat below)
+```
+
+`--offline` downloads Debian Bookworm packages for the target architecture from
+`deb.debian.org`, verified against `/usr/share/keyrings/debian-archive-keyring.gpg` (install
+`debian-archive-keyring` if missing), and unpacks them into `./sysroot`. Nothing is installed
+on the Pi and nothing on the Pi is modified.
+
+The remote form still works and no longer needs Pi-side networking: it reads the Pi's
+`/var/lib/dpkg/status`, downloads only the delta here (typically 3 packages / ~285 KB rather
+than the full 80-package closure), scp's those over, `dpkg -i`'s them, then rsyncs the result
+back. It refuses to downgrade anything on the target unless you pass `--allow-downgrade` —
+Stratux images sometimes carry Raspberry Pi's Mesa rather than Debian's.
+
+Prefer `--offline` unless you have a reason to mirror the real filesystem: it does not mutate
+a configured flight machine, and it is reproducible from an archive snapshot.
+
+### The cross-glibc trap
+
+**`deploy/check-glibc.sh` exists because this bug is invisible until the Pi refuses to exec
+the binary.** `deploy.sh` runs it automatically; run it by hand after any manual build:
+
+```sh
+./deploy/check-glibc.sh target/aarch64-unknown-linux-gnu/release/avionics
+```
+
+Ubuntu 26.04's cross toolchain carries glibc 2.43, and 2.43 **re-versioned the float maths
+functions** — its libm exports `acosf@@GLIBC_2.43` as the default where Bookworm exports
+`acosf@@GLIBC_2.17`. femtovg's trig picks those up, so a binary that links cleanly and
+reports the right architecture dies on the Pi with ``version `GLIBC_2.43' not found``.
+
+Two separate things have to be right to avoid it, and both are easy to get wrong:
+
+1. **The sysroot needs a complete `libc6-dev`**, not just the runtime `libc6`. Without
+   `libc.so`/`libm.so`/`crt1.o` in the sysroot the toolchain quietly falls back to its own.
+2. **Absolute symlinks must be rewritten to stay inside the sysroot.** Debian ships
+   `usr/lib/<triple>/libm.so -> /lib/<triple>/libm.so.6`; that leading slash resolves against
+   the *host's* root, so `ld` links the dev machine's glibc even though `--sysroot` is set.
+   `sync-sysroot.sh` relativises them; rsync's `--copy-unsafe-links` covers the mirror path.
+
+Note also that the sysroot search path has to come *before* the toolchain's built-in one.
+Neither `-C link-arg=-L…` nor `-L native=…` can do that — rustc emits both after its own `-l`
+flags, and `ld` resolves each `-l` against only the `-L` paths seen so far. That is why
+`.cargo/config.toml` points `linker` at `deploy/cross-cc-<triple>.sh` instead of at the
+cross-gcc directly.
 
 ### Reading the result
 
@@ -294,7 +348,13 @@ Things discovered the hard way, worth not rediscovering:
   to implement the `drm::buffer::Buffer` that `add_framebuffer` wants. Bump both together.
 - **Cross-linking needs only `libgbm`.** The `drm` crate talks to the kernel through
   `rustix`/`linux-raw-sys` (no libdrm), and `khronos-egl` uses its `dynamic` feature so libEGL
-  is `dlopen`'d at runtime. The full sysroot mirror is convenience, not necessity.
+  is `dlopen`'d at runtime. Confirmed on the finished binary — `DT_NEEDED` is exactly
+  `libgbm.so.1`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6`, all four of which the Stratux
+  image already has. **Nothing needs installing on the Pi to run this.** The full sysroot
+  mirror is convenience, not necessity.
+- **The sysroot still needs `libc6-dev` even so**, and its absolute symlinks must be
+  relativised, or you link against the dev machine's glibc and the binary will not start on
+  the Pi. See "The cross-glibc trap" above; `deploy/check-glibc.sh` catches it.
 - **femtovg's `Canvas::set_size()` secretly emits a `SetRenderTarget(Screen)` command** without
   updating the canvas's own `current_render_target` cache. Since `set_render_target()` is a
   no-op when that cache already matches, a later `set_render_target(Image(..))` gets silently

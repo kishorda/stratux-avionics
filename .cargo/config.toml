@@ -6,22 +6,23 @@
 #
 # Only ONE C library actually has to be linked: libgbm. `drm` talks to the kernel through
 # rustix/linux-raw-sys (no libdrm), and `khronos-egl` is built with its `dynamic` feature so
-# libEGL is dlopen'd at runtime rather than linked. So the sysroot only needs libgbm plus its
-# transitive .so files — see deploy/sync-sysroot.sh.
+# libEGL is dlopen'd at runtime rather than linked. The sysroot still needs a complete
+# libc6-dev though — see deploy/cross-cc-aarch64-linux-gnu.sh for why that matters.
+#
+# The linkers below are wrapper scripts, not the cross-gcc directly. They inject the sysroot
+# search paths ahead of the toolchain's built-in ones, which cannot be done from here: rustc
+# emits both `-C link-arg=-L…` and `-L native=…` AFTER its own -l flags, and ld resolves each
+# -l against only the -L paths it has seen so far. Get that wrong and the binary links
+# against the dev machine's glibc 2.43 and will not start on Bookworm's 2.36.
+#
+# Verify before deploying:
+#     ./deploy/check-glibc.sh target/aarch64-unknown-linux-gnu/release/avionics
 
 [target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-rustflags = [
-    "-C", "link-arg=--sysroot=/home/kishor-aher/Projects/stratux-avionics/sysroot",
-    "-C", "link-arg=-Wl,-rpath-link=/home/kishor-aher/Projects/stratux-avionics/sysroot/usr/lib/aarch64-linux-gnu",
-]
+linker = "deploy/cross-cc-aarch64-linux-gnu.sh"
 
 [target.armv7-unknown-linux-gnueabihf]
-linker = "arm-linux-gnueabihf-gcc"
-rustflags = [
-    "-C", "link-arg=--sysroot=/home/kishor-aher/Projects/stratux-avionics/sysroot",
-    "-C", "link-arg=-Wl,-rpath-link=/home/kishor-aher/Projects/stratux-avionics/sysroot/usr/lib/arm-linux-gnueabihf",
-]
+linker = "deploy/cross-cc-arm-linux-gnueabihf.sh"
 
 [env]
 # pkg-config must look inside the sysroot, not at the host's libraries.

@@ -29,12 +29,17 @@ esac
 # of "libgbm.so.1", producing a binary that then needs libgbm-dev installed on the Pi.
 if [[ ! -e "sysroot/usr/lib/$TRIPLE/libgbm.so.1" ]]; then
   echo "!!! sysroot/usr/lib/$TRIPLE/libgbm.so.1 is missing." >&2
-  echo "    Run: ./deploy/sync-sysroot.sh $HOST $TRIPLE" >&2
+  echo "    Run: ./deploy/sync-sysroot.sh --offline        (no Pi network needed)" >&2
+  echo "     or: ./deploy/sync-sysroot.sh $HOST $TRIPLE" >&2
   exit 1
 fi
 
 echo "==> Building $BIN for $TARGET (kms only; the offscreen backend is a dev-machine thing)"
 cargo build --release --target "$TARGET" -p "$BIN" --no-default-features --features kms
+
+# A cross-link against the wrong glibc still produces a perfectly valid-looking ELF; it fails
+# only when the Pi tries to exec it. Catch it here rather than over SSH.
+"$ROOT/deploy/check-glibc.sh" --max "${GLIBC_MAX:-2.36}" "target/$TARGET/release/$BIN"
 
 echo "==> Copying the binary to $HOST:$DEST/$BIN"
 rsync -az --info=progress2 "target/$TARGET/release/$BIN" "$HOST:$DEST/$BIN"

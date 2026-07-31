@@ -1,5 +1,8 @@
 /target
 # Mirrored off the Pi by deploy/sync-sysroot.sh; ~300 MB and host-specific.
 /sysroot
+# Target-architecture .debs fetched by deploy/fetch-target-debs.sh. Tens of MB, and
+# re-downloadable from the Debian archive at any time.
+/deploy/debs
 *.ppm
 *.png
