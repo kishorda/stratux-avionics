@@ -95,7 +95,7 @@ pub fn draw(
         scroll.set_text_baseline(Baseline::Middle);
         scroll.set_text_align(Align::Right);
         let _ = canvas.fill_text(
-            layout.width - layout.margin,
+            layout.content_width - layout.margin,
             y,
             format!(
                 "{}-{} of {}",
@@ -110,7 +110,7 @@ pub fn draw(
     y += line * 1.2;
     let mut separator = Path::new();
     separator.move_to(layout.margin, y - line * 0.4);
-    separator.line_to(layout.width - layout.margin, y - line * 0.4);
+    separator.line_to(layout.content_width - layout.margin, y - line * 0.4);
     canvas.stroke_path(
         &separator,
         &Paint::color(theme.text_dim).with_line_width(1.0),
@@ -145,7 +145,7 @@ pub fn draw(
         age_paint.set_text_baseline(Baseline::Middle);
         age_paint.set_text_align(Align::Right);
         let _ = canvas.fill_text(
-            layout.width - layout.margin,
+            layout.content_width - layout.margin,
             y,
             format_age(age),
             &age_paint,
@@ -163,7 +163,7 @@ pub fn draw(
         body.set_text_align(Align::Left);
 
         let indent = layout.margin + theme.font_size_small * 1.2;
-        let available = layout.width - indent - layout.margin;
+        let available = layout.content_width - indent - layout.margin;
         let text = truncate_to_width(canvas, &item.body, &body, available);
         let _ = canvas.fill_text(indent, y, &text, &body);
 
@@ -178,7 +178,7 @@ pub fn draw(
 
 fn draw_empty_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout) {
     let theme = &ui.theme;
-    let (cx, cy) = (layout.width * 0.5, layout.height * 0.5);
+    let (cx, cy) = (layout.content_width * 0.5, layout.height * 0.5);
 
     // "Nothing yet" is the normal state for minutes after a cold start, because Stratux's
     // /weather socket does not replay its buffer on connect. Saying so avoids it reading as a
@@ -231,14 +231,16 @@ fn draw_footer(
     hint.set_text_baseline(Baseline::Alphabetic);
     hint.set_text_align(Align::Left);
 
+    // Name the soft keys, not the touch zones. The keys are the primary controls now, and a hint
+    // that teaches tapping the body would teach the habit the strip exists to remove.
     let text = if total > per_page {
         if offset + per_page >= total {
-            "tap lower half to wrap to the top"
+            "DOWN wraps to the top"
         } else {
-            "tap lower half to scroll, upper half to go back"
+            "UP / DOWN to scroll"
         }
     } else {
-        "tap the status bar for the traffic view"
+        "PAGE for the traffic view"
     };
     let _ = canvas.fill_text(layout.margin, baseline, text, &hint);
 }

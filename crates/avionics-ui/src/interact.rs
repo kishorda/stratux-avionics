@@ -8,7 +8,7 @@
 //! panel, and every additional gesture is another way for the display to silently wander off the
 //! range or heading reference the pilot selected. Two fingers and a tap is the whole language.
 
-use crate::{Layout, Page, Ui, ViewState};
+use crate::{softkeys, Layout, Page, Ui, ViewState};
 
 /// Where a tap landed. Exposed so tests can assert on zones without a canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,15 +44,49 @@ pub fn zone_for(layout: &Layout, _x: f32, y: f32) -> TapZone {
 /// `weather_rows` is how many text entries currently fit, needed to page the weather list; pass
 /// [`crate::weatherpage::rows_per_page`].
 pub fn tap(view: &mut ViewState, layout: &Layout, x: f32, y: f32, weather_rows: usize, weather_total: usize) {
+    // The soft-key strip wins over everything: it overlaps the right edge of the status bar and
+    // the body, and a key press must never also register as whatever is underneath it.
+    if let Some(slot) = softkeys::hit(layout, x, y) {
+        if let Some(key) = softkeys::key_at(view, slot) {
+            apply_key(view, key, weather_rows, weather_total);
+        }
+        // A press on an inert slot is still a press on the strip. Swallow it rather than letting
+        // it fall through to the page underneath.
+        return;
+    }
+
     match zone_for(layout, x, y) {
-        // The status bar is present and identical on every page, which makes it the one reliable
-        // place to put navigation.
+        // Kept as a second way to reach the next page: it is the largest target on screen and
+        // costs nothing, since the status bar has no other meaning.
         TapZone::StatusBar => view.page = view.page.next(),
         TapZone::Footer => {}
         zone => match view.page {
-            Page::PlanView => view.cycle_range(),
+            // Deliberately inert. Before the soft keys existed, a tap anywhere in the body cycled
+            // the range — which meant a hand steadying itself against the panel in turbulence
+            // silently changed the range scale. Now that there is a dedicated RNG key, the body
+            // does nothing on the plan view.
+            Page::PlanView => {}
             Page::Weather => scroll_weather(view, zone, weather_rows, weather_total),
         },
+    }
+}
+
+/// Apply a soft key. Separate from [`tap`] so the mapping is testable without hit-testing.
+pub fn apply_key(
+    view: &mut ViewState,
+    key: softkeys::SoftKey,
+    weather_rows: usize,
+    weather_total: usize,
+) {
+    use softkeys::SoftKey;
+    match key {
+        SoftKey::Page => view.page = view.page.next(),
+        SoftKey::RangeUp => view.cycle_range(),
+        SoftKey::RangeDown => view.cycle_range_down(),
+        SoftKey::ToggleOrientation => view.toggle_orientation(),
+        SoftKey::ToggleUnderlay => view.show_weather_underlay = !view.show_weather_underlay,
+        SoftKey::ScrollUp => scroll_weather(view, TapZone::BodyUpper, weather_rows, weather_total),
+        SoftKey::ScrollDown => scroll_weather(view, TapZone::BodyLower, weather_rows, weather_total),
     }
 }
 
@@ -96,4 +130,174 @@ pub fn handle_tap(
     let rows = crate::weatherpage::rows_per_page(ui, layout);
     let total = state.weather.len();
     tap(view, layout, x, y, rows, total);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::softkeys::{self, SoftKey};
+    use crate::{Orientation, Theme};
+
+    fn layout() -> Layout {
+        Layout::for_size(800.0, 480.0, &Theme::dark())
+    }
+
+    /// Centre of a soft-key slot, in screen pixels.
+    fn key_point(layout: &Layout, slot: usize) -> (f32, f32) {
+        let (x, y, w, h) = softkeys::slot_rect(layout, slot);
+        (x + w * 0.5, y + h * 0.5)
+    }
+
+    #[test]
+    fn range_keys_step_both_ways() {
+        let l = layout();
+        let mut view = ViewState::default();
+        assert_eq!(view.range_nm, 10.0);
+
+        let (x, y) = key_point(&l, 1);
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.range_nm, 20.0, "RNG+ should step up");
+
+        let (x, y) = key_point(&l, 2);
+        tap(&mut view, &l, x, y, 5, 0);
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.range_nm, 5.0, "RNG- should step down twice");
+    }
+
+    #[test]
+    fn the_plan_view_body_no_longer_changes_range() {
+        // The whole reason the soft keys exist: a hand steadying itself against the panel used to
+        // cycle the range scale silently.
+        let l = layout();
+        let mut view = ViewState::default();
+        let before = view.range_nm;
+        for y in [l.status_bar_height + 20.0, l.height * 0.5, l.height - l.footer_height - 20.0] {
+            tap(&mut view, &l, l.content_width * 0.5, y, 5, 0);
+        }
+        assert_eq!(view.range_nm, before, "body taps must not change range");
+        assert_eq!(view.page, Page::PlanView, "body taps must not change page");
+    }
+
+    #[test]
+    fn page_key_is_in_the_same_place_on_both_pages() {
+        let l = layout();
+        let mut view = ViewState::default();
+        let (x, y) = key_point(&l, softkeys::PAGE_SLOT);
+
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.page, Page::Weather);
+        // Same coordinates must get us back, or there is no reliable way out of a wrong page.
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.page, Page::PlanView);
+    }
+
+    #[test]
+    fn inert_slots_swallow_the_press() {
+        let l = layout();
+        let mut view = ViewState {
+            page: Page::Weather,
+            ..Default::default()
+        };
+        let before = view.clone();
+        // Slots 3 and 4 are unused on the weather page.
+        for slot in [3, 4] {
+            let (x, y) = key_point(&l, slot);
+            tap(&mut view, &l, x, y, 5, 20);
+        }
+        assert_eq!(view.page, before.page, "an inert key must not fall through to the page");
+        assert_eq!(view.weather_scroll, before.weather_scroll);
+    }
+
+    #[test]
+    fn a_key_press_does_not_also_trigger_the_zone_beneath_it() {
+        // Slot 0 starts at y=0, so its upper part overlaps the status bar band. Probe there
+        // rather than at the slot centre, which sits below the bar. Without the early return in
+        // `tap`, this one press would switch pages twice and appear to do nothing.
+        let l = layout();
+        let (x, _) = key_point(&l, softkeys::PAGE_SLOT);
+        let y = l.status_bar_height * 0.5;
+
+        let (_, slot_y, _, slot_h) = softkeys::slot_rect(&l, softkeys::PAGE_SLOT);
+        assert!(
+            y >= slot_y && y < slot_y + slot_h,
+            "test premise: this point is inside slot 0"
+        );
+        assert_eq!(
+            zone_for(&l, x, y),
+            TapZone::StatusBar,
+            "test premise: this point is also in the status bar zone"
+        );
+
+        let mut view = ViewState::default();
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.page, Page::Weather, "double-dispatch would have returned to PlanView");
+    }
+
+    #[test]
+    fn underlay_key_toggles_and_is_reachable_only_on_the_plan_view() {
+        let l = layout();
+        let mut view = ViewState::default();
+        assert!(view.show_weather_underlay);
+
+        let (x, y) = key_point(&l, 4);
+        tap(&mut view, &l, x, y, 5, 0);
+        assert!(!view.show_weather_underlay);
+
+        // Slot 4 is inert on the weather page, so it must not toggle anything there.
+        view.page = Page::Weather;
+        tap(&mut view, &l, x, y, 5, 0);
+        assert!(!view.show_weather_underlay, "slot 4 must be inert on the weather page");
+    }
+
+    #[test]
+    fn orientation_key_matches_the_two_finger_gesture() {
+        let l = layout();
+        let mut by_key = ViewState::default();
+        let mut by_gesture = ViewState::default();
+
+        let (x, y) = key_point(&l, 3);
+        tap(&mut by_key, &l, x, y, 5, 0);
+        two_finger_tap(&mut by_gesture);
+
+        assert_eq!(by_key.orientation, by_gesture.orientation);
+        assert_eq!(by_key.orientation, Orientation::TrackUp);
+    }
+
+    #[test]
+    fn scroll_keys_move_the_weather_list() {
+        let l = layout();
+        let mut view = ViewState {
+            page: Page::Weather,
+            ..Default::default()
+        };
+        let (x, y) = key_point(&l, 2);
+        tap(&mut view, &l, x, y, 5, 20);
+        assert_eq!(view.weather_scroll, 5, "DOWN should advance one page of rows");
+
+        let (x, y) = key_point(&l, 1);
+        tap(&mut view, &l, x, y, 5, 20);
+        assert_eq!(view.weather_scroll, 0, "UP should come back");
+    }
+
+    #[test]
+    fn apply_key_and_tap_agree() {
+        // The strip's dispatch and the direct mapping must not drift apart.
+        let l = layout();
+        for (slot, key) in softkeys::keys_for(Page::PlanView).iter().enumerate() {
+            let Some(key) = key else { continue };
+            let mut by_tap = ViewState::default();
+            let mut direct = ViewState::default();
+            let (x, y) = key_point(&l, slot);
+            tap(&mut by_tap, &l, x, y, 5, 0);
+            apply_key(&mut direct, *key, 5, 0);
+            assert_eq!(by_tap.page, direct.page, "slot {slot}");
+            assert_eq!(by_tap.range_nm, direct.range_nm, "slot {slot}");
+            assert_eq!(by_tap.orientation, direct.orientation, "slot {slot}");
+            assert_eq!(
+                by_tap.show_weather_underlay, direct.show_weather_underlay,
+                "slot {slot}"
+            );
+        }
+        let _ = SoftKey::Page;
+    }
 }

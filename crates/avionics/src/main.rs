@@ -207,6 +207,19 @@ fn main() -> Result<()> {
         return run_check(&args);
     }
 
+    // A missing recording is fatal, and deliberately unlike a missing Stratux.
+    //
+    // The live path must always come up — a panel showing NO STRATUX CONNECTION beats a service
+    // that refused to start. Replay is the opposite: it is a measurement and test harness, so
+    // carrying on with an empty state renders a blank scene at a convincing 60 fps and reports
+    // timings for drawing nothing. That has already produced two meaningless measurements here
+    // after /tmp was cleared by a reboot, and neither looked like a failure.
+    if let Source::Replay { path, .. } = &args.source {
+        if let Err(e) = std::fs::File::open(path) {
+            bail!("cannot read the recording {}: {e}", path.display());
+        }
+    }
+
     // The render loop is synchronous and owns the main thread; ingest gets its own runtime thread.
     // Rendering must not be at the mercy of the async scheduler when a page flip is due.
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -30,12 +30,12 @@ pub fn draw(
     let theme = &ui.theme;
 
     let mut background = Path::new();
-    background.rect(0.0, 0.0, layout.width, layout.status_bar_height);
+    background.rect(0.0, 0.0, layout.content_width, layout.status_bar_height);
     canvas.fill_path(&background, &Paint::color(theme.bar_background));
 
     let mut separator = Path::new();
     separator.move_to(0.0, layout.status_bar_height);
-    separator.line_to(layout.width, layout.status_bar_height);
+    separator.line_to(layout.content_width, layout.status_bar_height);
     canvas.stroke_path(
         &separator,
         &Paint::color(theme.text_dim).with_line_width(1.0),
@@ -280,7 +280,9 @@ fn draw_alarms(
     paint.set_text_align(Align::Right);
     paint.set_text_baseline(Baseline::Middle);
 
-    let mut x = layout.width - layout.margin;
+    // content_width, not width: past that lies the soft-key strip, and a warning drawn
+    // under it is a warning the pilot never sees.
+    let mut x = layout.content_width - layout.margin;
     for (text, colour) in messages {
         paint.set_color(colour);
         let width = canvas
@@ -290,7 +292,7 @@ fn draw_alarms(
         let _ = canvas.fill_text(x, baseline, &text, &paint);
         x -= width + 12.0;
         // Stop before running into the left-hand fields rather than overprinting them.
-        if x < layout.width * 0.45 {
+        if x < layout.content_width * 0.45 {
             break;
         }
     }

@@ -24,6 +24,7 @@ pub mod nexrad;
 pub mod planview;
 pub mod projection;
 pub mod reckon;
+pub mod softkeys;
 pub mod statusbar;
 pub mod symbols;
 pub mod theme;
@@ -203,6 +204,9 @@ impl Ui {
         };
 
         statusbar::draw(self, canvas, state, view, now, &layout, &stats);
+        // Last, so the strip is never overdrawn by page content that ran long. It is the only
+        // way to change pages, so it must survive a drawing bug elsewhere.
+        softkeys::draw(self, canvas, view);
         stats
     }
 
@@ -246,6 +250,11 @@ pub struct Layout {
     /// Radius in pixels of the outermost range ring.
     pub outer_radius: f32,
     pub margin: f32,
+    /// Width of the soft-key strip down the right-hand edge.
+    pub strip_width: f32,
+    /// Width available to everything else. **Use this, not `width`, for any content that must
+    /// not slide under the soft keys** — the strip is drawn over the right edge of the panel.
+    pub content_width: f32,
 }
 
 impl Layout {
@@ -254,12 +263,18 @@ impl Layout {
         let footer_height = theme.font_size_normal * 1.8;
         let margin = 8.0;
 
+        // 12% of the panel, floored at 72 px. The floor is what matters: these are the only
+        // controls, they get pressed in turbulence, and a strip that scales below roughly a
+        // fingertip stops being hittable long before it stops being readable.
+        let strip_width = (width * 0.12).max(72.0).min(width * 0.25);
+        let content_width = (width - strip_width).max(1.0);
+
         let plan_top = status_bar_height;
         let plan_height = (height - status_bar_height - footer_height).max(1.0);
-        let center = (width * 0.5, plan_top + plan_height * 0.5);
+        let center = (content_width * 0.5, plan_top + plan_height * 0.5);
 
         // Leave room outside the ring for its label and the compass ticks.
-        let radius_limit = (plan_height * 0.5).min(width * 0.5) - margin;
+        let radius_limit = (plan_height * 0.5).min(content_width * 0.5) - margin;
         let outer_radius = (radius_limit - theme.font_size_small * 1.6).max(24.0);
 
         Self {
@@ -270,6 +285,8 @@ impl Layout {
             center,
             outer_radius,
             margin,
+            strip_width,
+            content_width,
         }
     }
 }

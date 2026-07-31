@@ -402,13 +402,16 @@ fn tapping_the_status_bar_switches_page() {
 }
 
 #[test]
-fn tapping_the_plan_view_cycles_range_and_leaves_the_page_alone() {
+fn tapping_the_plan_view_body_changes_nothing() {
+    // This test used to assert the opposite: that a body tap cycled the range. That behaviour was
+    // removed when the soft-key strip landed, because it meant a hand steadying itself against the
+    // panel in turbulence silently changed the range scale. Range now moves only via RNG+/RNG-.
     let l = layout();
     let mut view = ViewState::default();
     let before = view.range_nm;
 
     tap(&mut view, &l, 400.0, 240.0, 8, 0);
-    assert_ne!(view.range_nm, before);
+    assert_eq!(view.range_nm, before, "body taps must not change range");
     assert_eq!(view.page, Page::PlanView);
 }
 

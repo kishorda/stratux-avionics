@@ -389,6 +389,15 @@ fn draw_tags(
             x1: layout.width,
             y1: layout.height,
         },
+        // The soft-key strip. Reserved like any other chrome: it is drawn after the plan view,
+        // so a tag placed under it is not clipped, it is silently covered — the symbol stays
+        // visible while its label vanishes, which is the most confusing possible outcome.
+        Rect {
+            x0: layout.content_width,
+            y0: 0.0,
+            x1: layout.width,
+            y1: layout.height,
+        },
     ];
 
     // Range labels and the north pointer are already on screen; a tag drawn over them makes both
@@ -416,7 +425,7 @@ fn draw_tags(
         // Candidates: (anchor x, alignment, vertical offset).
         let right = (x + gap, Align::Left);
         let left = (x - gap - width, Align::Right);
-        let prefer_left = x > layout.width * 0.62;
+        let prefer_left = x > layout.content_width * 0.62;
         let sides = if prefer_left { [left, right] } else { [right, left] };
 
         let mut placed = None;
@@ -435,7 +444,7 @@ fn draw_tags(
                 .shifted(0.0, dy);
 
                 // Off the panel edge is as bad as a collision.
-                if candidate.x0 < layout.margin || candidate.x1 > layout.width - layout.margin {
+                if candidate.x0 < layout.margin || candidate.x1 > layout.content_width - layout.margin {
                     continue;
                 }
                 if occupied.iter().any(|r| r.overlaps(&candidate)) {

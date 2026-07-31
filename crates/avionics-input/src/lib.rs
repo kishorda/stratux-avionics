@@ -18,15 +18,18 @@
 //! for "ft5406" or "touch" finds nothing on this panel, which looks exactly like a missing
 //! device. `NAME_HINTS` below covers both spellings for that reason.
 //!
+//! The trailing `(79)` is **not stable**: the same panel reported `(00)` on a later boot. It is
+//! a firmware value the driver reads back over i2c and folds into the name, so never match on
+//! the full string. Substring matching, which is what `NAME_HINTS` does, is what makes this
+//! survive — an exact-name match would have worked in testing and failed in the aircraft.
+//!
 //! The axis ranges are 0..=799 by 0..=479, i.e. the controller reports in panel pixels and the
 //! scaling into screen coordinates is the identity here. Do not simplify the scaling away: it is
 //! a property of this panel, not of the protocol, and the 1024x600 variants of this class of
 //! panel do not share it.
 //!
-//! Still unconfirmed, because it needs an actual finger rather than an SSH session: whether the
-//! controller emits `BTN_TOUCH`, how many slots it reports, and whether `ABS_MT_TRACKING_ID`
-//! lifetimes behave as the decoding below assumes. The gesture state machine is therefore still
-//! unproven, even though device discovery and scaling are not.
+//! Single-finger taps are confirmed working on the panel. Still unconfirmed: two-finger tap,
+//! and therefore whether multi-slot `ABS_MT_TRACKING_ID` lifetimes behave as decoded below.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
