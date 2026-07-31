@@ -14,26 +14,29 @@
 # # The Pi has no internet
 #
 # So the old `ssh pi 'apt-get install libgbm-dev'` step cannot work. The -dev packages are a
-# *build-time* artifact — the display itself needs only the runtime Mesa that the image
-# already ships — so there are two honest ways to get them, and this script does both:
+# *build-time* artifact, needed only here, so there are two honest ways to get them and this
+# script does both.
 #
-#   default    Download the packages here (deploy/fetch-target-debs.sh), carry the handful
-#              that are actually missing over scp, dpkg -i them on the Pi, then rsync the
-#              result back. The sysroot then reflects the real flight machine, which is the
-#              thing you are actually linking for.
+# (Do not confuse that with the RUNTIME libraries. The Stratux image ships no Mesa at all —
+# no libgbm.so.1, no libEGL — so the Pi does need packages installed before the display can
+# run. That is deploy/push-packages.sh, and it is a separate, deliberate step.)
 #
-#   --offline  Download the full closure here and unpack it straight into ./sysroot. The Pi
-#              is never contacted and never modified. Reproducible from an archive snapshot,
-#              and the right choice if you would rather not mutate a configured flight box.
-#              The risk it carries is the whole reason the default is the other one: the
-#              sysroot is then Debian's idea of bookworm, not your Pi's, and if the image
-#              carries Raspberry Pi's Mesa builds instead of Debian's, they can differ.
+#   default    Mirror the Pi's real libraries over rsync (read-only) and take headers from
+#              the archive. The sysroot then reflects the real flight machine, which is the
+#              thing you are actually linking for. NOTHING on the Pi is modified — to change
+#              what is installed there, use deploy/push-packages.sh deliberately.
+#
+#   --offline  Download the closure here and unpack it straight into ./sysroot. The Pi is
+#              never contacted. Reproducible from an archive snapshot. Add --rpi to pull
+#              Raspberry Pi's builds (Mesa 24.2.8+rpt) instead of Debian's (22.3.6), which is
+#              what the Stratux image actually runs; without it the sysroot is Debian's idea
+#              of bookworm and can differ from the real machine.
 #
 set -euo pipefail
 
 MODE="remote"
 DO_INSTALL=1
-ALLOW_DOWNGRADE=0
+RPI=0
 HOST=""
 TRIPLE=""
 
@@ -41,7 +44,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --offline)          MODE="offline"; shift ;;
     --no-install)       DO_INSTALL=0; shift ;;
-    --allow-downgrade)  ALLOW_DOWNGRADE=1; shift ;;
+    --rpi)              RPI=1; shift ;;
     -h|--help)          sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; exit 0 ;;
     -*)                 echo "unknown option: $1" >&2; exit 1 ;;
     *)                  if [[ -z "$HOST" ]]; then HOST="$1"; else TRIPLE="$1"; fi; shift ;;
@@ -123,7 +126,9 @@ DEBS="$ROOT/deploy/debs/$DEB_ARCH"
 # ---------------------------------------------------------------------------------------
 if [[ "$MODE" == "offline" ]]; then
   rm -rf "$DEBS"
-  "$ROOT/deploy/fetch-target-debs.sh" --arch "$DEB_ARCH" --out "$DEBS" "${PKGS[@]}"
+  RPI_FLAG=()
+  [[ "$RPI" -eq 1 ]] && RPI_FLAG=(--rpi)
+  "$ROOT/deploy/fetch-target-debs.sh" --arch "$DEB_ARCH" --out "$DEBS" "${RPI_FLAG[@]}" "${PKGS[@]}"
 
   echo "==> Unpacking into $SYSROOT"
   mkdir -p "$SYSROOT"
@@ -148,7 +153,20 @@ if [[ "$MODE" == "offline" ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------
-# Remote: fetch only what the Pi is missing, carry it over, install, then mirror.
+# Remote: mirror the Pi READ-ONLY, and take headers from the archive.
+#
+# This branch used to dpkg -i the -dev packages on the Pi and rsync the result back. That is
+# gone, for two reasons found on the real machine:
+#
+#   * Building a sysroot must not modify the flight computer. If you want to change what is
+#     installed on the Pi, do it deliberately with deploy/push-packages.sh.
+#   * It could not work anyway. The image is built on Raspberry Pi's archive (+rpt versions)
+#     and is months behind it, so Debian's exact-version -dev dependencies dragged in a
+#     partial dist-upgrade — libc6, and the kernel from 6.6.74 to 6.12.96.
+#
+# So: headers and linker symlinks come from the archive (self-consistent, unpacked locally),
+# and the Pi's real runtime libraries are rsync'd over the top so DT_NEEDED resolves against
+# what the machine actually has.
 # ---------------------------------------------------------------------------------------
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/sync-sysroot.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -158,48 +176,43 @@ scp -q "$HOST:/var/lib/dpkg/status" "$TMP/status"
 installed_versions "$TMP/status" > "$TMP/installed.tsv"
 echo "    $(wc -l < "$TMP/installed.tsv") packages installed on the target"
 
+RPI_FLAG=()
+if grep -q '+rpt' "$TMP/status"; then
+  RPI_FLAG=(--rpi)
+fi
+
+# Warn early about runtime libraries the binary will need but the image does not have. The
+# Stratux image ships no Mesa at all, so this is not hypothetical: without it the cross-built
+# binary links here and then dies on the Pi with "libgbm.so.1: cannot open shared object file".
+echo "==> Checking the target has the runtime libraries the binary needs"
+missing=""
+for lib in libgbm.so.1 libEGL.so.1; do
+  ssh "$HOST" "ls /usr/lib/$TRIPLE/$lib >/dev/null 2>&1" || missing="$missing $lib"
+done
+if [[ -n "$missing" ]]; then
+  echo "    !!! target is missing:$missing" >&2
+  echo "        The display cannot run there until that is fixed:" >&2
+  echo "            ./deploy/push-packages.sh $HOST libgbm1 libegl1 libgles2 libgl1-mesa-dri" >&2
+  echo "        Continuing — the sysroot is still buildable, it just has nothing to run on yet." >&2
+else
+  echo "    present."
+fi
+
 if [[ "$DO_INSTALL" -eq 1 ]]; then
   rm -rf "$DEBS"
-  echo "==> Downloading whatever the target is missing (on this machine — the Pi has no network)"
+  echo "==> Fetching headers and linker symlinks from the archive (nothing is sent to the Pi)"
+  # No --status here on purpose: we want a self-consistent set from the archive to unpack
+  # locally, not a delta against the Pi. Nothing is installed on the target either way.
   "$ROOT/deploy/fetch-target-debs.sh" \
-    --arch "$DEB_ARCH" --status "$TMP/status" --out "$DEBS" "${PKGS[@]}"
+    --arch "$DEB_ARCH" --out "$DEBS" "${RPI_FLAG[@]}" "${PKGS[@]}"
 
-  if [[ -s "$DEBS/manifest.txt" ]]; then
-    # Guard against silently downgrading the flight machine. `dpkg -i` will happily install
-    # an older version over a newer one, and the Stratux images sometimes carry Raspberry
-    # Pi's Mesa rather than Debian's, which is exactly where that would bite.
-    echo "==> Checking none of these would downgrade the target"
-    downgrades=0
-    while IFS=$'\t' read -r pkg newver _; do
-      cur="$(awk -F'\t' -v p="$pkg" '$1 == p { print $2; exit }' "$TMP/installed.tsv")"
-      [[ -n "$cur" ]] || continue
-      if dpkg --compare-versions "$newver" lt "$cur"; then
-        echo "    !!! $pkg: target has $cur, archive offers $newver (DOWNGRADE)" >&2
-        downgrades=1
-      fi
-    done < "$DEBS/manifest.txt"
-    if [[ "$downgrades" -eq 1 ]]; then
-      if [[ "$ALLOW_DOWNGRADE" -eq 1 ]]; then
-        echo "    proceeding anyway because --allow-downgrade was given"
-      else
-        echo >&2
-        echo "!!! Refusing to downgrade packages on the target." >&2
-        echo "    The image is probably not running stock Debian Mesa. Either pass" >&2
-        echo "    --allow-downgrade if you are sure, or use --offline to build the sysroot" >&2
-        echo "    without touching the Pi." >&2
-        exit 1
-      fi
-    fi
-
-    echo "==> Copying $(wc -l < "$DEBS/manifest.txt") package(s) to the target"
-    ssh "$HOST" 'rm -rf /tmp/avionics-debs && mkdir -p /tmp/avionics-debs'
-    scp -q "$DEBS"/*.deb "$HOST:/tmp/avionics-debs/"
-
-    echo "==> Installing them there (dpkg only — no network is touched)"
-    ssh -t "$HOST" 'sudo dpkg -i /tmp/avionics-debs/*.deb && rm -rf /tmp/avionics-debs'
-  fi
+  echo "==> Unpacking into $SYSROOT"
+  mkdir -p "$SYSROOT"
+  for d in "$DEBS"/*.deb; do
+    dpkg-deb -x "$d" "$SYSROOT"
+  done
 else
-  echo "==> --no-install: assuming the headers are already on the target"
+  echo "==> --no-install: skipping the archive headers, mirroring only"
 fi
 
 echo "==> Mirroring into $SYSROOT"
@@ -214,6 +227,12 @@ rsync -a --copy-unsafe-links --info=progress2 \
 rsync -a --copy-unsafe-links --info=progress2 \
   "$HOST:/usr/include/" "$SYSROOT/usr/include/"
 
+# The mirror lands on top of the unpacked archive files, so where both supply something the
+# Pi's real copy wins — which is the point. Absolute symlinks from either source have to be
+# confined afterwards or ld follows them out onto the dev machine's glibc.
+echo "==> Confining absolute symlinks to the sysroot"
+relativise_symlinks "$SYSROOT"
+
 echo
 echo "==> Done. Sanity check:"
 ls -l "$SYSROOT/usr/lib/$TRIPLE/libgbm.so"* 2>/dev/null || {
@@ -221,5 +240,8 @@ ls -l "$SYSROOT/usr/lib/$TRIPLE/libgbm.so"* 2>/dev/null || {
   exit 1
 }
 echo
-echo "Note: .cargo/config.toml hardcodes the sysroot path. If you moved the checkout,"
-echo "update the --sysroot link-args there to match $SYSROOT."
+echo "Nothing on the target was modified. To change what is installed there, use:"
+echo "    ./deploy/push-packages.sh $HOST <packages...>"
+echo
+echo "Verify the result before deploying:"
+echo "    ./deploy/check-glibc.sh target/$([[ $DEB_ARCH == arm64 ]] && echo aarch64-unknown-linux-gnu || echo armv7-unknown-linux-gnueabihf)/release/avionics"
