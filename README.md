@@ -165,6 +165,30 @@ show a roughly constant frame deficit rather than one that scales with duration:
 `last fps` reads 60.0 in all three. Do not read an instantaneous `last fps` of 50.0 as
 sustained drops — that is a sample landing during a NEXRAD composite.
 
+### The longest run so far, and one unexplained number
+
+45 minutes on the AHRS page, live (not replay), with `dump1090` running:
+
+```
+frames     : 140533
+mean draw  : 2.85 ms
+worst draw : 72.35 ms
+last fps   : 32.6
+```
+
+**Mean draw held at 2.85 ms across 140k frames** — no upward drift over 45 minutes, which is
+the useful result: whatever the worst case is, it is not creeping.
+
+`last fps: 32.6` is **not explained**. Every earlier run sampled 60.0 at the same point. It is a
+single instantaneous sample taken as `SIGTERM` arrived, so it may only be catching the shutdown
+— or it may be the board throttling harder as it warms. One sample cannot distinguish those, and
+it is recorded here rather than rationalised so that it gets re-checked rather than forgotten.
+
+Neither number is a clean measurement: this run was at 600 MHz under the under-voltage throttle,
+with a throttled GPU, which is not the configuration the aircraft flies. **Re-measure after the
+supply is fixed** — that is the first thing worth doing with a healthy board, and it is what
+turns `32.6` into either a non-event or a real finding.
+
 NEXRAD geo-referencing: `21 drawn, 0 outside, 542 bins`. Every block landed inside the
 projection, which is the failure that looks plausible while being wrong.
 
