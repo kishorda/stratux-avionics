@@ -4,5 +4,9 @@
 # Target-architecture .debs fetched by deploy/fetch-target-debs.sh. Tens of MB, and
 # re-downloadable from the Debian archive at any time.
 /deploy/debs
+# M0 hardware survey output, per the command in the README. Describes one particular Pi
+# (its panel modes, DRM layout, touch device, idle load), so it is a local observation
+# rather than something the repo should assert about anyone else's hardware.
+/m0-survey.txt
 *.ppm
 *.png
