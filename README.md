@@ -15,19 +15,26 @@ and how to run it.
 
 | Milestone | What | State |
 | --- | --- | --- |
-| M0 | Hardware & OS bring-up survey | **partly done** — display/touch/CPU surveyed; **no SDRs or GPS attached yet** |
+| M0 | Hardware & OS bring-up survey | **nearly done** — both SDRs, GPS and panel attached and detected; **blocked on an under-voltage supply**, and GPS needs a sky view for a fix |
 | M1 | Rendering spike — go/no-go on the stack | **PASSED on hardware** — see [M0/M1 results](#m0--m1-results-on-hardware) |
 | M2 | Presenter abstraction + interactive dev harness | **done** — offscreen + interactive window |
-| M3 | Stratux client + replay harness | **done**; all five sockets connect on the Pi, but no radios means no live traffic yet |
-| M4 | Traffic plan view | **renders on the panel from replay**; gestures still unproven, frame cost unmeasured under radio load |
+| M3 | Stratux client + replay harness | **live data flowing** — all five sockets connect, 1090 MHz decoding; not yet diffed against Stratux's web UI |
+| M4 | Traffic plan view | **renders on the panel, touch confirmed**; frame cost under radio load still unmeasured |
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; still unvalidated against an independent mosaic |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
+| — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-94 tests passing, clippy clean.
+127 tests passing, clippy clean.
 
-The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS,
-GLES2, panel, touch discovery, all five Stratux sockets, 60 fps with the full scene. What is
-not proven is anything needing the radios, a finger, or a human looking at the screen.
+The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
+panel, touch, all five Stratux sockets, live 1090 MHz traffic, and 60 fps with the full scene.
+What is not proven is anything needing a sky view (GPS fix, UAT, NEXRAD validation) or an
+un-throttled power supply (frame cost under radio load, thermal soak, power cuts).
+
+> ⚠️ **The Pi is currently running under-voltage** (`throttled=0x50005`, clocked down to 600 MHz
+> from 900). Fix the supply before trusting any performance or thermal measurement — and before
+> running M6's power-cut test, which on an under-volted board risks causing the SD corruption it
+> exists to disprove. See the M0 section for detail.
 
 ## Layout
 

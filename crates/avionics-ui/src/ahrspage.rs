@@ -21,9 +21,13 @@
 //!
 //! Stratux reports pitch positive nose-up and roll positive right-wing-down. On screen the
 //! horizon moves *opposite* to the aircraft: nose-up pushes the horizon down, right bank rotates
-//! it counter-clockwise. Getting either backwards produces an indicator that is confidently
-//! inverted, so both are covered by tests in terms of where the horizon lands, not in terms of
-//! the intermediate maths.
+//! it counter-clockwise, putting more ground on the right.
+//!
+//! **Confirmed by tilting the panel, 2026-07-31.** That check is the only one that counts here:
+//! the maths is self-consistent whichever way round the signs go, so a unit test can prove the
+//! horizon lands where the code intends and still not notice the code intends the wrong thing.
+//! An inverted attitude indicator is confidently wrong exactly when someone leans on it. If these
+//! signs are ever touched, re-verify the same way — on hardware, by eye.
 
 use std::time::{Duration, Instant};
 
