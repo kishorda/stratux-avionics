@@ -267,7 +267,20 @@ impl KmsPresenter {
     /// Block until the pending page flip has completed.
     fn wait_for_flip(&self) -> Result<()> {
         loop {
-            let events = self.card.receive_events().context("reading DRM events")?;
+            let events = match self.card.receive_events() {
+                Ok(events) => events,
+                // A signal interrupts this blocking read: our SIGINT/SIGTERM handlers are
+                // installed without SA_RESTART, precisely so the process notices them. The page
+                // flip is still queued, and the previous buffer must not be released until it
+                // lands, so the only correct response is to read again — the event arrives
+                // within one refresh and the main loop then sees the exit flag.
+                //
+                // Treating EINTR as fatal instead made every clean shutdown fail: Ctrl-C and
+                // `systemctl stop` both exited with "reading DRM events: Interrupted system
+                // call" and skipped the render-timing summary on the way out.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e).context("reading DRM events"),
+            };
             for event in events {
                 if matches!(event, Event::PageFlip(_)) {
                     return Ok(());
