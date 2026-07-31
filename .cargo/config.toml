@@ -1,0 +1,28 @@
+# Cross-compilation for the Raspberry Pi.
+#
+# Confirm the target architecture on the flashed Stratux image before picking a target:
+#     ssh pi@stratux dpkg --print-architecture
+# Current Stratux images are arm64; older ones were armhf. Use the matching target below.
+#
+# Only ONE C library actually has to be linked: libgbm. `drm` talks to the kernel through
+# rustix/linux-raw-sys (no libdrm), and `khronos-egl` is built with its `dynamic` feature so
+# libEGL is dlopen'd at runtime rather than linked. So the sysroot only needs libgbm plus its
+# transitive .so files — see deploy/sync-sysroot.sh.
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = [
+    "-C", "link-arg=--sysroot=/home/kishor-aher/Projects/stratux-avionics/sysroot",
+    "-C", "link-arg=-Wl,-rpath-link=/home/kishor-aher/Projects/stratux-avionics/sysroot/usr/lib/aarch64-linux-gnu",
+]
+
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = [
+    "-C", "link-arg=--sysroot=/home/kishor-aher/Projects/stratux-avionics/sysroot",
+    "-C", "link-arg=-Wl,-rpath-link=/home/kishor-aher/Projects/stratux-avionics/sysroot/usr/lib/arm-linux-gnueabihf",
+]
+
+[env]
+# pkg-config must look inside the sysroot, not at the host's libraries.
+PKG_CONFIG_ALLOW_CROSS = "1"

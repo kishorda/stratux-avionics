@@ -1,0 +1,12 @@
+[package]
+name = "avionics-input"
+description = "Touch input: evdev multitouch to gestures."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+evdev = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

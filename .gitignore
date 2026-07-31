@@ -1,0 +1,5 @@
+/target
+# Mirrored off the Pi by deploy/sync-sysroot.sh; ~300 MB and host-specific.
+/sysroot
+*.ppm
+*.png

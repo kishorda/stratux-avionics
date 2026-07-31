@@ -1,0 +1,46 @@
+# Raspberry Pi config.txt additions for the avionics display.
+#
+# DO NOT blindly append this to the Stratux image's /boot/firmware/config.txt. Read the
+# existing file first and reconcile — the Stratux image already sets some of these, and a
+# duplicated or conflicting dtoverlay line is worse than a missing one.
+#
+# Two hard rules:
+#   * Remove any `dtoverlay=rpi-ft5406`. That is the firmware touch path and it conflicts
+#     with the touch controller included in vc4-kms-dsi-7inch.
+#   * Never mix `vc4-kms-*` with `vc4-fkms-*`.
+
+# --- Display + GPU -----------------------------------------------------------------------
+# Full KMS driver. Required: the app renders through DRM/KMS and needs a real atomic-capable
+# vc4 driver, not the firmware-mediated fkms one.
+dtoverlay=vc4-kms-v3d
+
+# 7" DSI panel. Bundles the edt-ft5406 touch controller, so no separate touch overlay.
+# Orientation params if the panel is mounted rotated: invx, invy, swapxy
+#   e.g. dtoverlay=vc4-kms-dsi-7inch,invx,invy   (180 degrees)
+dtoverlay=vc4-kms-dsi-7inch
+
+# Contiguous memory for scanout buffers. The Pi 3 has only 1 GB total, and vc4 allocates
+# framebuffers from CMA; the default is tight once two SDRs are also running.
+dtoverlay=vc4-kms-v3d,cma-128
+
+# --- Boot time ---------------------------------------------------------------------------
+disable_splash=1
+boot_delay=0
+
+# --- Reliability -------------------------------------------------------------------------
+# Hardware watchdog. Pair with RuntimeWatchdogSec in /etc/systemd/system.conf so a wedged
+# kernel reboots instead of leaving a frozen display in front of the pilot.
+dtparam=watchdog=on
+
+
+# =========================================================================================
+# Kernel command line — these go in /boot/firmware/cmdline.txt, NOT here.
+# cmdline.txt is a single line; append these to it, space separated.
+#
+#   consoleblank=0              don't blank the console (we own the VT, but belt and braces)
+#   vt.global_cursor_default=0  no blinking text cursor before our first frame
+#   logo.nologo                 no raspberry logo
+#
+# Also disable the login prompt on the console we take over:
+#   sudo systemctl disable --now getty@tty1
+# =========================================================================================

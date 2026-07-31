@@ -1,0 +1,28 @@
+[package]
+name = "avionics"
+description = "The cockpit display: Stratux data rendered straight to the panel."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["kms", "offscreen"]
+# Render to the panel via DRM/KMS. This is what ships.
+kms = ["avionics-gfx/kms", "dep:avionics-input"]
+# Render headless and dump frames as images, for verification on the dev machine.
+offscreen = ["avionics-gfx/offscreen"]
+# Interactive window on the dev machine. Not part of the default set: it drags in winit and glutin,
+# which have no business being cross-compiled into the binary that ships on the aircraft.
+desktop = ["avionics-gfx/desktop"]
+
+[dependencies]
+avionics-gfx = { path = "../avionics-gfx" }
+avionics-ui = { path = "../avionics-ui" }
+avionics-input = { path = "../avionics-input", optional = true }
+stratux-client = { path = "../stratux-client" }
+anyhow = { workspace = true }
+nix = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

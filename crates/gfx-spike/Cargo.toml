@@ -1,0 +1,19 @@
+[package]
+name = "gfx-spike"
+description = "M1 go/no-go: proves femtovg's GLES2 path works on the Pi 3's vc4 driver via DRM/KMS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["kms", "offscreen"]
+kms = ["avionics-gfx/kms"]
+offscreen = ["avionics-gfx/offscreen"]
+
+[dependencies]
+avionics-gfx = { path = "../avionics-gfx" }
+anyhow = { workspace = true }
+nix = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

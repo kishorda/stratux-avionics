@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/avionics-gfx",
+    "crates/gfx-spike",
+    "crates/stratux-client",
+    "crates/avionics-input",
+    "crates/avionics-ui",
+    "crates/avionics",
+    "tools/replay",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# --- rendering ---
+# "textlayout" is required for fill_text/measure_text. "image-loading" is deliberately off:
+# NEXRAD textures are built from raw bytes, so no image decoder needs to ship on the aircraft.
+femtovg = { version = "0.26", default-features = false, features = ["textlayout"] }
+# drm is pinned to 0.14 (not the newer 0.15) because gbm 0.18's `drm-support` feature is built
+# against 0.14. Mixing them puts two `drm` crates in the graph and `BufferObject` then fails to
+# implement the `drm::buffer::Buffer` we hand to `add_framebuffer`. Bump both together.
+drm = "0.14"
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+
+# --- desktop dev harness ---
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+
+# --- platform ---
+nix = { version = "0.31", default-features = false, features = ["ioctl", "fs", "signal"] }
+evdev = "0.13"
+
+# --- Stratux ingest ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs"] }
+# No TLS: Stratux speaks plain HTTP/ws on loopback, and pulling in rustls/native-tls would add
+# a large dependency tree to something that ships on the aircraft for no benefit.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+
+# --- plumbing ---
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The Pi 3 is a 4-core 1.2 GHz part sharing CPU with dump1090/dump978.
+# Optimise hard, and keep debug symbols so panics on the aircraft are diagnosable.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1
+panic = "abort"

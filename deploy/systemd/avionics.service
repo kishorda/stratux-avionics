@@ -1,0 +1,61 @@
+[Unit]
+Description=Stratux avionics display
+Documentation=file:///opt/avionics/README.md
+
+# Ordered after Stratux, but deliberately NOT Requires= or BindsTo=.
+#
+# The display must always start. If Stratux is down, dead, or simply slower to come up — which is
+# the normal case, since both start at power-on and the display usually wins the race — the right
+# behaviour is a panel showing "NO STRATUX CONNECTION" and retrying, not a service that refused to
+# start and left the pilot a black screen.
+After=stratux.service
+Wants=stratux.service
+
+# The DRM device has to exist before we can take it.
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+# We take the console into graphics mode, so nothing else may own it.
+Conflicts=getty@tty1.service
+
+# Bound the restart loop. A genuinely broken binary would otherwise rewrite the journal to the SD
+# card as fast as it can crash, which wears the card and buries the original error.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/opt/avionics/bin/avionics
+
+# Verify the install before taking the display. Fails fast with a clear journal message rather than
+# a black panel if the font vanished or the DSI ribbon came loose.
+ExecStartPre=/opt/avionics/bin/avionics --check
+
+Restart=always
+RestartSec=1
+
+# Root is required: DRM master, and the KDSETMODE ioctl on the console.
+User=root
+
+# The font lives under /opt, outside apt's reach. A cockpit display that cannot draw text because
+# an unrelated `apt autoremove` took fonts-dejavu-core is a reliability bug, not a packaging one.
+Environment=AVIONICS_FONT=/opt/avionics/assets/font.ttf
+Environment=RUST_LOG=info
+
+StandardOutput=journal
+StandardError=journal
+
+# The process restores the console on SIGTERM. Give it a moment, then stop waiting: a hung display
+# should be killed and restarted, not nursed.
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+# Keep the display off the cores the demodulators use.
+#
+# Commented out on purpose. Pinning is a fix for a contention problem that has not been measured
+# yet — run deploy/soak.sh --compare first. If that shows the renderer costing the radios messages,
+# uncomment this and install deploy/systemd/stratux-cpu-affinity.conf to give Stratux cores 0-2.
+# CPUAffinity=3
+
+[Install]
+WantedBy=multi-user.target

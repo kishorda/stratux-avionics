@@ -1,0 +1,34 @@
+[package]
+name = "avionics-gfx"
+description = "Presenter abstraction over femtovg: DRM/KMS on the Pi, winit on the dev machine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Render straight to DRM/KMS via GBM + EGL. This is the real target (Raspberry Pi 3, vc4).
+kms = ["dep:drm", "dep:gbm", "dep:khronos-egl", "dep:nix", "dep:libloading"]
+# Headless GLES2 on a DRM render node, rendering into an FBO we can read back. Works on the
+# dev machine alongside a running desktop session; also the basis for golden-image tests.
+offscreen = ["dep:gbm", "dep:khronos-egl", "dep:libloading"]
+# Render into a window on the dev machine so UI code can be iterated without a Pi.
+desktop = ["dep:winit", "dep:glutin", "dep:glutin-winit", "dep:raw-window-handle"]
+
+[dependencies]
+femtovg = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+drm = { workspace = true, optional = true }
+gbm = { workspace = true, optional = true }
+khronos-egl = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
+nix = { workspace = true, optional = true }
+
+winit = { workspace = true, optional = true }
+glutin = { workspace = true, optional = true }
+glutin-winit = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }

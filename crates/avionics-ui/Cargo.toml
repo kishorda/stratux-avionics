@@ -1,0 +1,13 @@
+[package]
+name = "avionics-ui"
+description = "Traffic plan view: projection, dead reckoning, threat classification and drawing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+avionics-gfx = { path = "../avionics-gfx" }
+stratux-client = { path = "../stratux-client" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
