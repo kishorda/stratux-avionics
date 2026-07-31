@@ -238,7 +238,7 @@ fn main() -> Result<()> {
     } else if args.window {
         run_window(&args, state)
     } else {
-        run_kms(&args, state)
+        run_kms(&args, state, runtime.handle().clone())
     }
 }
 
@@ -342,6 +342,52 @@ fn apply_key(view: &mut ViewState, key: char) {
         'p' => view.page = view.page.next(),
         'w' => view.show_weather_underlay = !view.show_weather_underlay,
         _ => {}
+    }
+}
+
+/// Drive the AHRS cage request: issue a confirmed one, and collect its result.
+///
+/// Called once per frame. Everything here is non-blocking — the render loop is paced by the page
+/// flip and must never wait on a socket, however briefly.
+#[cfg(feature = "kms")]
+fn pump_cage(
+    view: &mut ViewState,
+    sender: &std::sync::mpsc::Sender<bool>,
+    results: &std::sync::mpsc::Receiver<bool>,
+    target: &Option<(String, u16)>,
+    runtime: &tokio::runtime::Handle,
+) {
+    use avionics_ui::CageState;
+
+    let now = Instant::now();
+    // Retire a lapsed arm or a finished result first, so a stale CONFIRM cannot sit on the key.
+    view.tick_cage(now);
+
+    if let Ok(ok) = results.try_recv() {
+        view.set_cage(CageState::Done { ok }, now);
+    }
+
+    if view.cage == CageState::Requested {
+        match target {
+            Some((host, port)) => {
+                view.set_cage(CageState::InFlight, now);
+                let (host, port) = (host.clone(), *port);
+                let tx = sender.clone();
+                runtime.spawn(async move {
+                    let outcome = stratux_client::control::cage_ahrs(&host, port).await;
+                    match &outcome {
+                        Ok(()) => tracing::info!("AHRS caged: attitude reference zeroed"),
+                        Err(e) => tracing::error!(error = %e, "caging the AHRS failed"),
+                    }
+                    // A closed channel just means the display is shutting down.
+                    let _ = tx.send(outcome.is_ok());
+                });
+            }
+            None => {
+                tracing::warn!("no live Stratux to cage (replaying a recording)");
+                view.set_cage(CageState::Done { ok: false }, now);
+            }
+        }
     }
 }
 
@@ -556,7 +602,7 @@ fn draw_frame(
 }
 
 #[cfg(feature = "kms")]
-fn run_kms(args: &Args, state: Shared) -> Result<()> {
+fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Result<()> {
     use avionics_gfx::kms::{KmsConfig, KmsPresenter};
 
     let mut config = KmsConfig {
@@ -584,11 +630,24 @@ fn run_kms(args: &Args, state: Shared) -> Result<()> {
         }
     };
 
+    // Where a completed cage request reports back. The render loop must never block on the
+    // network, so the request runs on the Tokio runtime and answers through this channel, which
+    // the loop drains without waiting.
+    let (cage_tx, cage_rx) = std::sync::mpsc::channel::<bool>();
+    let cage_target = match &args.source {
+        Source::Live { host, port } => Some((host.clone(), *port)),
+        // Replaying a recording: there is no Stratux to cage, and pretending otherwise would
+        // show CAGED for something that never happened.
+        Source::Replay { .. } => None,
+    };
+
     tracing::info!("rendering to the panel; Ctrl-C to stop");
     while !SHUTDOWN.load(Ordering::SeqCst) {
         if args.frames != 0 && timing.frames >= args.frames {
             break;
         }
+
+        pump_cage(&mut view, &cage_tx, &cage_rx, &cage_target, &runtime);
 
         if let Some(reader) = touch.as_mut() {
             match reader.poll() {
@@ -650,7 +709,7 @@ fn apply_gesture(
 }
 
 #[cfg(not(feature = "kms"))]
-fn run_kms(_args: &Args, _state: Shared) -> Result<()> {
+fn run_kms(_args: &Args, _state: Shared, _runtime: tokio::runtime::Handle) -> Result<()> {
     bail!("this binary was built without the `kms` feature")
 }
 

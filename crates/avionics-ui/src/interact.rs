@@ -8,7 +8,7 @@
 //! panel, and every additional gesture is another way for the display to silently wander off the
 //! range or heading reference the pilot selected. Two fingers and a tap is the whole language.
 
-use crate::{softkeys, Layout, Page, Ui, ViewState};
+use crate::{softkeys, CageState, Layout, Page, Ui, ViewState};
 
 /// Where a tap landed. Exposed so tests can assert on zones without a canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +81,17 @@ pub fn apply_key(
     weather_rows: usize,
     weather_total: usize,
 ) {
+    apply_key_at(view, key, weather_rows, weather_total, std::time::Instant::now())
+}
+
+/// As [`apply_key`], with an explicit clock so the cage state machine is testable.
+pub fn apply_key_at(
+    view: &mut ViewState,
+    key: softkeys::SoftKey,
+    weather_rows: usize,
+    weather_total: usize,
+    now: std::time::Instant,
+) {
     use softkeys::SoftKey;
     match key {
         SoftKey::Page => view.page = view.page.next(),
@@ -90,6 +101,14 @@ pub fn apply_key(
         SoftKey::ToggleUnderlay => view.show_weather_underlay = !view.show_weather_underlay,
         SoftKey::ScrollUp => scroll_weather(view, TapZone::BodyUpper, weather_rows, weather_total),
         SoftKey::ScrollDown => scroll_weather(view, TapZone::BodyLower, weather_rows, weather_total),
+        SoftKey::CageAhrs => match view.cage {
+            // Arm, then confirm. A single press must never re-reference the sensor.
+            CageState::Idle => view.set_cage(CageState::Armed, now),
+            CageState::Armed => view.set_cage(CageState::Requested, now),
+            // Already in flight, or showing its result: ignore rather than queueing a second
+            // request behind the first.
+            CageState::Requested | CageState::InFlight | CageState::Done { .. } => {}
+        },
     }
 }
 
@@ -195,6 +214,93 @@ mod tests {
         assert_eq!(view.page, Page::Ahrs);
         tap(&mut view, &l, x, y, 5, 0);
         assert_eq!(view.page, Page::PlanView, "the cycle must return to traffic");
+    }
+
+    #[test]
+    fn caging_needs_two_presses_never_one() {
+        // The whole point: one press must never re-reference the attitude sensor.
+        let l = layout();
+        let now = std::time::Instant::now();
+        let mut view = ViewState {
+            page: Page::Ahrs,
+            ..Default::default()
+        };
+        let (x, y) = key_point(&l, 4);
+
+        assert_eq!(view.cage, CageState::Idle);
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.cage, CageState::Armed, "one press must only arm");
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.cage, CageState::Requested, "the second press confirms");
+
+        // Further presses must not queue another request behind the first.
+        tap(&mut view, &l, x, y, 5, 0);
+        assert_eq!(view.cage, CageState::Requested);
+
+        let _ = now;
+    }
+
+    #[test]
+    fn an_armed_cage_lapses_so_two_unrelated_presses_cannot_combine() {
+        let now = std::time::Instant::now();
+        let mut view = ViewState::default();
+        view.set_cage(CageState::Armed, now);
+
+        // Still armed a moment later.
+        view.tick_cage(now + std::time::Duration::from_secs(1));
+        assert_eq!(view.cage, CageState::Armed);
+
+        // Lapsed after the timeout: a stray press now and a real one minutes later must not
+        // add up to a cage nobody asked for.
+        view.tick_cage(now + crate::CAGE_ARM_TIMEOUT + std::time::Duration::from_millis(1));
+        assert_eq!(view.cage, CageState::Idle);
+    }
+
+    #[test]
+    fn a_finished_cage_returns_to_idle_on_its_own() {
+        let now = std::time::Instant::now();
+        let mut view = ViewState::default();
+        view.set_cage(CageState::Done { ok: true }, now);
+
+        view.tick_cage(now + std::time::Duration::from_secs(1));
+        assert_eq!(view.cage, CageState::Done { ok: true }, "result should dwell");
+
+        view.tick_cage(now + crate::CAGE_RESULT_DWELL + std::time::Duration::from_millis(1));
+        assert_eq!(view.cage, CageState::Idle);
+    }
+
+    #[test]
+    fn the_level_key_is_not_reachable_from_the_other_pages() {
+        // Slot 4 is the underlay toggle on the plan view and inert on weather. Pressing it there
+        // must not touch the cage state.
+        let l = layout();
+        let (x, y) = key_point(&l, 4);
+        for page in [Page::PlanView, Page::Weather] {
+            let mut view = ViewState {
+                page,
+                ..Default::default()
+            };
+            tap(&mut view, &l, x, y, 5, 20);
+            assert_eq!(view.cage, CageState::Idle, "slot 4 armed a cage on {page:?}");
+        }
+    }
+
+    #[test]
+    fn the_key_label_tracks_the_cage_state() {
+        let mut view = ViewState {
+            page: Page::Ahrs,
+            ..Default::default()
+        };
+        let key = softkeys::SoftKey::CageAhrs;
+        let now = std::time::Instant::now();
+
+        assert_eq!(softkeys::label(key, &view), "LEVEL");
+        view.set_cage(CageState::Armed, now);
+        assert_eq!(softkeys::label(key, &view), "CONFIRM");
+        view.set_cage(CageState::Done { ok: true }, now);
+        assert_eq!(softkeys::label(key, &view), "CAGED");
+        view.set_cage(CageState::Done { ok: false }, now);
+        assert_eq!(softkeys::label(key, &view), "FAILED");
     }
 
     #[test]

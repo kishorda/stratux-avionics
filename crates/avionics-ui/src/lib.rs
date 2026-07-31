@@ -32,7 +32,7 @@ pub mod theme;
 pub mod threat;
 pub mod weatherpage;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use avionics_gfx::femtovg::FontId;
@@ -76,6 +76,37 @@ impl Page {
     }
 }
 
+/// Progress of a "the aircraft is straight and level" request.
+///
+/// # Why this is a state machine and not a button
+///
+/// Caging re-references the sensor, and the corrected attitude flows to everything downstream —
+/// this display, the GDL90 feed to a tablet, the logs. Caging while *not* level teaches the
+/// sensor that a banked, pitched attitude is level, and nothing announces that it happened.
+///
+/// So one press is not enough. The first press arms and the key relabels to CONFIRM; only a
+/// second press sends the request. The arm lapses on its own after [`CAGE_ARM_TIMEOUT`], so a
+/// stray press followed by a real one seconds later cannot combine into a cage the pilot never
+/// intended. This is the same reasoning that made the plan-view body inert: in turbulence a hand
+/// finds the panel, and the cost of an accidental press here is an instrument that lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CageState {
+    Idle,
+    /// First press seen; waiting for confirmation.
+    Armed,
+    /// Confirmed. The app should issue the request and move to [`CageState::InFlight`].
+    Requested,
+    InFlight,
+    /// Finished, showing the outcome briefly before returning to idle.
+    Done { ok: bool },
+}
+
+/// How long an armed cage waits for its confirming press before lapsing.
+pub const CAGE_ARM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the outcome stays on the key before it returns to idle.
+pub const CAGE_RESULT_DWELL: Duration = Duration::from_secs(3);
+
 /// What the pilot has selected. Persisted across frames by the app; mutated by touch.
 #[derive(Debug, Clone)]
 pub struct ViewState {
@@ -87,6 +118,10 @@ pub struct ViewState {
     pub weather_scroll: usize,
     /// Draw the NEXRAD underlay on the plan view.
     pub show_weather_underlay: bool,
+    /// Progress of an AHRS cage request. See [`CageState`].
+    pub cage: CageState,
+    /// When `cage` last changed, for the arm timeout and result dwell.
+    pub cage_changed: Option<Instant>,
 }
 
 impl Default for ViewState {
@@ -99,6 +134,8 @@ impl Default for ViewState {
             orientation: Orientation::NorthUp,
             weather_scroll: 0,
             show_weather_underlay: true,
+            cage: CageState::Idle,
+            cage_changed: None,
         }
     }
 }
@@ -131,6 +168,29 @@ impl ViewState {
 
     pub fn toggle_orientation(&mut self) {
         self.orientation = self.orientation.toggled();
+    }
+
+    pub fn set_cage(&mut self, state: CageState, now: Instant) {
+        self.cage = state;
+        self.cage_changed = Some(now);
+    }
+
+    /// Let an armed cage lapse, and retire a finished one. Call once per frame.
+    ///
+    /// Without this an arm would persist indefinitely, so a press now and an unrelated press
+    /// minutes later would combine into a cage nobody asked for.
+    pub fn tick_cage(&mut self, now: Instant) {
+        let Some(changed) = self.cage_changed else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(changed);
+        match self.cage {
+            CageState::Armed if elapsed > CAGE_ARM_TIMEOUT => self.set_cage(CageState::Idle, now),
+            CageState::Done { .. } if elapsed > CAGE_RESULT_DWELL => {
+                self.set_cage(CageState::Idle, now)
+            }
+            _ => {}
+        }
     }
 }
 

@@ -35,6 +35,7 @@
 //! types. Quarantining the fragile stream to one purpose means an upstream change there degrades
 //! the weather underlay instead of the whole display.
 
+pub mod control;
 pub mod decode;
 pub mod domain;
 pub mod live;
