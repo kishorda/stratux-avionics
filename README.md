@@ -57,64 +57,48 @@ are copy-pasteable, and `stratux.local` is deliberately not used: mDNS does not 
 this setup, and a hostname that silently fails to resolve is worse than an address you must
 edit.
 
-### Bring up eth0 and give it an address
+### Plug in a cable — that is usually all
 
-`eth0` comes up **DOWN** on this image and **there is no DHCP client installed** — so the
-usual `dhclient`/`dhcpcd` advice does not apply, and you cannot install one without the
-network you are trying to obtain. A static address needs neither.
+`eth0` is already configured for DHCP by the image and brought up by `ifplugd` when it sees a
+link:
 
-At the Pi's console (a USB keyboard is enough):
-
-```sh
-sudo ip link set eth0 up
-sudo ip addr replace 10.0.0.240/24 dev eth0     # pick a free address on your LAN
-ip -br addr show eth0                            # confirm UP and the address
+```
+# /etc/network/interfaces
+# allow-hotplug eth0 # configured by ifplugd
+iface eth0 inet dhcp
 ```
 
-**Do not add a default route and do not touch `/etc/resolv.conf`.** Same-subnet traffic needs
-neither, and a default route via `eth0` risks disturbing the AP routing Stratux manages. The
-Pi stays without internet, which is the assumption the rest of the tooling is built on.
-
-Diagnosing `DOWN`, if it does not come up:
+So plug the Pi into your router and it gets an address by itself. Find it by MAC — the Pi's
+OUI is `b8:27:eb` on a 3B:
 
 ```sh
-ip -br link show eth0                # NO-CARRIER = cable/port; neither UP nor NO-CARRIER = admin-down
+ip neigh show | grep -i 'b8:27:eb'          # after pinging the subnet, or just check the router
+```
+
+Give it a **DHCP reservation on the router** if you want the address to stay put. That is the
+supported way, and it does not fight anything on the Pi.
+
+#### If eth0 looks DOWN, check the cable first
+
+```sh
+ip -br link show eth0                # NO-CARRIER = no link; neither UP nor NO-CARRIER = admin-down
 cat /sys/class/net/eth0/carrier      # 1 = link present
 ```
 
-### Make it survive a reboot
+`ifplugd` only brings the interface up when a cable is present, so an unplugged Pi shows
+`eth0` as `DOWN` with no address and no `dhclient` running. That is normal, not a fault.
 
-The commands above are lost on reboot. This unit restores them, and nothing else:
-
-```sh
-sudo tee /etc/systemd/system/eth0-static.service >/dev/null <<'EOF'
-[Unit]
-Description=Static address on eth0 for development access
-After=network-pre.target
-Wants=network-pre.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/sbin/ip link set eth0 up
-ExecStart=/sbin/ip addr replace 10.0.0.240/24 dev eth0
-ExecStop=/sbin/ip addr del 10.0.0.240/24 dev eth0
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now eth0-static.service
-```
-
-Two deliberate choices. `ip addr replace`, not `ip addr add`: `add` fails with `EEXIST` when
-the address is already present, which for a `Type=oneshot` unit means a failed service and no
-ethernet — and it would fail at exactly the moment you cannot afford it to, the first reboot.
-`replace` is idempotent, so the unit can be started and proven immediately. And a bare `ip`
-unit rather than enabling `systemd-networkd` or installing NetworkManager: it touches `eth0`
-and nothing else, so it cannot interfere with the AP Stratux manages.
-
-This is a development convenience. Remove it before the box flies.
+> **Two traps that cost real time here, recorded so nobody repeats them.**
+>
+> `dhclient` lives in `/sbin`, which is **not on a non-root user's `PATH`** on Debian. `which
+> dhclient` as `pi` finds nothing and it looks as though no DHCP client is installed. It is —
+> `isc-dhcp-client`. Check with `ls -l /sbin/dhclient` or `dpkg -l isc-dhcp-client`.
+>
+> Do **not** "fix" a `DOWN` eth0 with a static address in a systemd unit. It was tried here.
+> On a Pi 3 the NIC is USB-attached and enumerates late, so a unit ordered on
+> `network-pre.target` fails with `Cannot find device "eth0"` on some boots and wins on
+> others — the address then flaps between the static one and the DHCP one, seemingly at
+> random. Let `ifplugd` and `dhclient` do their job.
 
 ### Then key-based SSH
 
