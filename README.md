@@ -178,8 +178,9 @@ cost frames at 800x480. It does not.
 | CMA | 131072 kB after `cma-128` |
 | glibc | 2.36 (`2.36-9+rpt2+deb12u9`) — the ceiling `check-glibc.sh` enforces |
 | Idle load | 0.24, ~49 °C, `throttled=0x0` |
-| SDRs | **none attached** |
-| GPS | **none attached**, no `/dev/ttyACM0` |
+| SDRs | 2x NESDR Nano 2 (`0bda:2838`) via a powered VL813 hub |
+| GPS | u-blox 8 (`1546:01a8`) on `/dev/ttyACM0` |
+| First air data | **1090 MHz decoding: 10 msgs/min, 1 target tracked** |
 
 Three things the image did **not** have, all fixed by `deploy/push-packages.sh`:
 
@@ -192,6 +193,24 @@ The Hysong panel works under `vc4-kms-dsi-7inch` — that was rated the likelies
 it was not one. Note the touch driver names the device **`ft5x06`, not `ft5406`**: grepping
 `/proc/bus/input/devices` for "ft5406" or "touch" finds nothing and looks exactly like a
 missing device.
+
+### Two hardware issues found once everything was attached
+
+**Under-voltage.** With the hub, GPS and both SDRs connected the Pi reports
+`throttled=0x50005` — under-voltage *and actively throttled* — at 43 °C, so it is supply, not
+heat. It read `0x0` before the hub. The hub enumerates with `bMaxPower=0mA` (bus-powered)
+while carrying 1280 mA of downstream devices. This matters more here than on a desktop Pi:
+throttling starves `dump1090`/`dump978` of exactly the CPU the plan says must not be starved,
+and it is the likely cause of the unexplained reboots seen during bring-up. **No M4 contention
+figure or M6 thermal/soak result is meaningful until this is fixed** — and M6's 20 power-cut
+test on an under-volted Pi risks causing the SD corruption it exists to rule out.
+
+**One SDR is untagged.** Serials read `stx:978:0` and `stx:0:0`; Stratux assigns 1090 vs 978
+by that tag, so an untagged dongle's role is not pinned and the two can swap across reboots —
+silently feeding each antenna to the wrong demodulator. See
+[`deploy/sdr-serial-tagging.md`](deploy/sdr-serial-tagging.md), which also explains why
+`apt install rtl-sdr` on the Pi is a trap (it would downgrade the `librtlsdr0` that `dump1090`
+is linked against).
 
 ### What is still unproven
 
