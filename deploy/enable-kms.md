@@ -62,14 +62,21 @@ Wants=network-pre.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/sbin/ip link set eth0 up
-ExecStart=/sbin/ip addr add 10.0.0.240/24 dev eth0
+ExecStart=/sbin/ip addr replace 10.0.0.240/24 dev eth0
 ExecStop=/sbin/ip addr del 10.0.0.240/24 dev eth0
 
 [Install]
 WantedBy=multi-user.target
 EOF
+sudo systemctl daemon-reload
 sudo systemctl enable eth0-static.service
+sudo systemctl start eth0-static.service   # safe to run now: `addr replace` is idempotent
 ```
+
+`addr replace` rather than `addr add` on purpose — `add` fails with EEXIST if the address
+is already present, which would make a `Type=oneshot` unit fail and leave you with no
+ethernet. `replace` succeeds either way, so the unit can be started and tested immediately
+instead of first being proven at the one moment you cannot afford it to be wrong.
 
 Deliberately a bare `ip` unit rather than enabling `systemd-networkd` or installing a DHCP
 client: it touches `eth0` and nothing else, so it cannot interfere with the WiFi AP that
