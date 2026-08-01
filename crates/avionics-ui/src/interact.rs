@@ -101,6 +101,12 @@ pub fn apply_key_at(
         SoftKey::ToggleUnderlay => view.show_weather_underlay = !view.show_weather_underlay,
         SoftKey::ScrollUp => scroll_weather(view, TapZone::BodyUpper, weather_rows, weather_total),
         SoftKey::ScrollDown => scroll_weather(view, TapZone::BodyLower, weather_rows, weather_total),
+        SoftKey::ToggleDecode => {
+            view.weather_decode = !view.weather_decode;
+            // Entering decode selects the first entry that was on screen, so the report being
+            // expanded is one the reader was already looking at rather than a jump to the top.
+            view.weather_scroll = view.weather_scroll.min(weather_total.saturating_sub(1));
+        }
         SoftKey::CageAhrs => match view.cage {
             // Arm, then confirm. A single press must never re-reference the sensor.
             CageState::Idle => view.set_cage(CageState::Armed, now),
@@ -122,7 +128,13 @@ pub fn two_finger_tap(view: &mut ViewState) {
 }
 
 fn scroll_weather(view: &mut ViewState, zone: TapZone, rows: usize, total: usize) {
-    let max_offset = total.saturating_sub(rows);
+    // Decoding shows one report at a time, so UP/DOWN step by one entry rather than by a page.
+    let (step, max_offset) = if view.weather_decode {
+        (1, total.saturating_sub(1))
+    } else {
+        (rows, total.saturating_sub(rows))
+    };
+    let rows = step;
     match zone {
         TapZone::BodyLower => {
             // Wrap at the end rather than sticking: with no scrollbar to drag, a dead tap looks
@@ -282,6 +294,57 @@ mod tests {
             };
             tap(&mut view, &l, x, y, 5, 20);
             assert_eq!(view.cage, CageState::Idle, "slot 4 armed a cage on {page:?}");
+        }
+    }
+
+    #[test]
+    fn decoding_toggles_and_switches_up_down_to_single_steps() {
+        let l = layout();
+        let mut view = ViewState {
+            page: Page::Weather,
+            ..Default::default()
+        };
+        let (x, y) = key_point(&l, 3);
+
+        // Browsing: UP/DOWN move a page at a time.
+        tap(&mut view, &l, key_point(&l, 2).0, key_point(&l, 2).1, 5, 20);
+        assert_eq!(view.weather_scroll, 5, "a page is five rows here");
+
+        // Decoding shows one report, so the same keys step one entry.
+        tap(&mut view, &l, x, y, 5, 20);
+        assert!(view.weather_decode);
+        tap(&mut view, &l, key_point(&l, 2).0, key_point(&l, 2).1, 5, 20);
+        assert_eq!(view.weather_scroll, 6, "decode mode steps one entry");
+
+        // And back.
+        tap(&mut view, &l, x, y, 5, 20);
+        assert!(!view.weather_decode);
+    }
+
+    #[test]
+    fn entering_decode_keeps_the_selection_inside_the_list() {
+        let l = layout();
+        let mut view = ViewState {
+            page: Page::Weather,
+            weather_scroll: 99,
+            ..Default::default()
+        };
+        let (x, y) = key_point(&l, 3);
+        tap(&mut view, &l, x, y, 5, 3);
+        assert_eq!(view.weather_scroll, 2, "clamped to the last entry, not left out of range");
+    }
+
+    #[test]
+    fn the_decode_key_is_not_reachable_from_the_other_pages() {
+        let l = layout();
+        let (x, y) = key_point(&l, 3);
+        for page in [Page::PlanView, Page::Ahrs] {
+            let mut view = ViewState {
+                page,
+                ..Default::default()
+            };
+            tap(&mut view, &l, x, y, 5, 20);
+            assert!(!view.weather_decode, "slot 3 toggled decode on {page:?}");
         }
     }
 

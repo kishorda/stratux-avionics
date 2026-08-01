@@ -60,6 +60,7 @@ View
   --track-up           start in track-up instead of north-up
   --weather-page       start on the FIS-B text page
   --ahrs-page          start on the attitude page
+  --decode             start with the weather report expanded
   --no-underlay        don't draw the NEXRAD precipitation underlay
 
 Other
@@ -147,6 +148,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--track-up" => args.view.orientation = Orientation::TrackUp,
             "--weather-page" => args.view.page = avionics_ui::Page::Weather,
             "--ahrs-page" => args.view.page = avionics_ui::Page::Ahrs,
+            "--decode" => args.view.weather_decode = true,
             "--no-underlay" => args.view.show_weather_underlay = false,
             "--range" => {
                 let v: f32 = value()?.parse().context("bad --range")?;

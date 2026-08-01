@@ -15,7 +15,7 @@ use avionics_gfx::Canvas;
 use stratux_client::domain::{WeatherProduct, WeatherText};
 use stratux_client::AppState;
 
-use crate::{metar, Layout, Ui, ViewState};
+use crate::{glossary, metar, Layout, Ui, ViewState};
 
 /// Sort priority: the products a pilot reaches for first come first.
 fn priority(product: &WeatherProduct) -> u8 {
@@ -118,6 +118,13 @@ pub fn draw(
 
     if items.is_empty() {
         draw_empty_notice(ui, canvas, state, layout);
+        return;
+    }
+
+    if view.weather_decode {
+        let selected = view.weather_scroll.min(items.len() - 1);
+        draw_decoded(ui, canvas, items[selected], now, layout, y, selected, items.len());
+        draw_footer(ui, canvas, layout, view, items.len(), per_page, selected);
         return;
     }
 
@@ -363,4 +370,205 @@ fn draw_body_tokens(
         let _ = canvas.fill_text(x, y, token, paint);
         x += width + space;
     }
+}
+
+/// One report with its abbreviations expanded.
+///
+/// The raw text stays at the top, in full and still hazard-coloured. The expansion is an
+/// *addition* underneath it, never a replacement: the report is the authority and the glossary is
+/// a reminder of what its codes mean. That ordering is the whole point — a pilot who already
+/// reads METARs should be able to ignore everything below the first line.
+#[allow(clippy::too_many_arguments)]
+fn draw_decoded(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    item: &WeatherText,
+    now: Instant,
+    layout: &Layout,
+    top: f32,
+    index: usize,
+    total: usize,
+) {
+    let theme = &ui.theme;
+    let line = theme.font_size_small * 1.35;
+    // Starts where the caller left off, below the page header and its separator. Recomputing
+    // from the status bar instead drew this straight over them.
+    let mut y = top;
+
+    // --- heading ---
+    let mut label = Paint::color(theme.text_primary);
+    label.set_font(&[ui.font()]);
+    label.set_font_size(theme.font_size_small);
+    label.set_text_baseline(Baseline::Middle);
+    label.set_text_align(Align::Left);
+
+    let heading = if item.location.is_empty() {
+        item.product.label().to_string()
+    } else {
+        format!("{} {}", item.product.label(), item.location)
+    };
+    let _ = canvas.fill_text(layout.margin, y, &heading, &label);
+
+    let heading_w = canvas
+        .measure_text(0.0, 0.0, &heading, &label)
+        .map(|m| m.width())
+        .unwrap_or(0.0);
+    if matches!(item.product, WeatherProduct::Metar) {
+        if let Some(category) = metar::summarise(&item.body).category {
+            let mut badge = Paint::color(category_colour(ui, category));
+            badge.set_font(&[ui.font()]);
+            badge.set_font_size(theme.font_size_small);
+            badge.set_text_baseline(Baseline::Middle);
+            badge.set_text_align(Align::Left);
+            let _ = canvas.fill_text(layout.margin + heading_w + 10.0, y, category.label(), &badge);
+        }
+    }
+
+    let mut right = Paint::color(theme.text_dim);
+    right.set_font(&[ui.font()]);
+    right.set_font_size(theme.font_size_small);
+    right.set_text_baseline(Baseline::Middle);
+    right.set_text_align(Align::Right);
+    let _ = canvas.fill_text(
+        layout.content_width - layout.margin,
+        y,
+        format!("{} of {}   {}", index + 1, total, format_age(now.saturating_duration_since(item.received))),
+        &right,
+    );
+    y += line;
+
+    // --- the raw report, wrapped rather than truncated ---
+    //
+    // The list view truncates because a long TAF would push other stations off the page. Here
+    // there is only one report on screen, so it is shown whole: the codes being explained below
+    // have to be visible above, or the expansion refers to text the reader cannot see.
+    let mut body = Paint::color(theme.text_secondary);
+    body.set_font(&[ui.font()]);
+    body.set_font_size(theme.font_size_small);
+    body.set_text_baseline(Baseline::Middle);
+    body.set_text_align(Align::Left);
+
+    let indent = layout.margin + theme.font_size_small * 0.8;
+    let available = layout.content_width - indent - layout.margin;
+    y = draw_wrapped_tokens(ui, canvas, &item.body, &mut body, indent, y, available, line);
+
+    y += line * 0.4;
+    let mut separator = Path::new();
+    separator.move_to(layout.margin, y);
+    separator.line_to(layout.content_width - layout.margin, y);
+    canvas.stroke_path(&separator, &Paint::color(theme.text_dim).with_line_width(1.0));
+    y += line * 0.7;
+
+    // --- expansions ---
+    let codes = glossary::explain(&item.body);
+    if codes.is_empty() {
+        let mut none = Paint::color(theme.text_dim);
+        none.set_font(&[ui.font()]);
+        none.set_font_size(theme.font_size_small);
+        none.set_text_baseline(Baseline::Middle);
+        none.set_text_align(Align::Left);
+        let _ = canvas.fill_text(
+            layout.margin,
+            y,
+            "no recognised abbreviations in this report",
+            &none,
+        );
+        return;
+    }
+
+    let mut code_paint = Paint::color(theme.text_primary);
+    code_paint.set_font(&[ui.font()]);
+    code_paint.set_font_size(theme.font_size_small);
+    code_paint.set_text_baseline(Baseline::Middle);
+    code_paint.set_text_align(Align::Left);
+
+    let mut meaning = Paint::color(theme.text_secondary);
+    meaning.set_font(&[ui.font()]);
+    meaning.set_font_size(theme.font_size_small);
+    meaning.set_text_baseline(Baseline::Middle);
+    meaning.set_text_align(Align::Left);
+
+    // Two columns: a report can carry a dozen codes and one column would run off the bottom.
+    let column_w = (layout.content_width - layout.margin * 2.0) * 0.5;
+    let rows_available = (((layout.height - layout.footer_height) - y) / (line * 0.95)).floor();
+    let rows = (rows_available.max(1.0) as usize).max(1);
+
+    let code_column = codes
+        .iter()
+        .map(|(c, _)| {
+            canvas
+                .measure_text(0.0, 0.0, *c, &code_paint)
+                .map(|m| m.width())
+                .unwrap_or(0.0)
+        })
+        .fold(0.0f32, f32::max)
+        + theme.font_size_small * 0.8;
+
+    for (i, (code, text)) in codes.iter().enumerate() {
+        if i >= rows * 2 {
+            break;
+        }
+        let column = i / rows;
+        let row = i % rows;
+        let x = layout.margin + column as f32 * column_w;
+        let ry = y + row as f32 * line * 0.95;
+
+        // Hazard codes keep the colour they had in the report above, so the eye can match the
+        // expansion to the token it came from without re-reading either.
+        code_paint.set_color(match metar::token_hazard(code) {
+            metar::Hazard::Warning => theme.warning,
+            metar::Hazard::Caution => theme.caution,
+            metar::Hazard::None => theme.text_primary,
+        });
+        let _ = canvas.fill_text(x, ry, *code, &code_paint);
+        let _ = canvas.fill_text(x + code_column, ry, *text, &meaning);
+    }
+}
+
+/// Draw tokens with hazard colouring, wrapping onto further lines. Returns the y after the last.
+#[allow(clippy::too_many_arguments)]
+fn draw_wrapped_tokens(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    body: &str,
+    paint: &mut Paint,
+    x0: f32,
+    y0: f32,
+    available: f32,
+    line: f32,
+) -> f32 {
+    let theme = &ui.theme;
+    let space = canvas
+        .measure_text(0.0, 0.0, " ", paint)
+        .map(|m| m.width())
+        .unwrap_or(4.0);
+
+    let mut x = x0;
+    let mut y = y0;
+    let mut in_remarks = false;
+    for token in body.split_whitespace() {
+        if token == "RMK" {
+            in_remarks = true;
+        }
+        let width = canvas
+            .measure_text(0.0, 0.0, token, paint)
+            .map(|m| m.width())
+            .unwrap_or(0.0);
+        if x - x0 + width > available {
+            x = x0;
+            y += line;
+        }
+        paint.set_color(if in_remarks {
+            theme.text_dim
+        } else {
+            match metar::token_hazard(token) {
+                metar::Hazard::Warning => theme.warning,
+                metar::Hazard::Caution => theme.caution,
+                metar::Hazard::None => theme.text_secondary,
+            }
+        });
+        let _ = canvas.fill_text(x, y, token, paint);
+        x += width + space;
+    }
+    y + line
 }

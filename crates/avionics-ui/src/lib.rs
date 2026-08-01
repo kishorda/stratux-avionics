@@ -20,6 +20,7 @@
 
 pub mod ahrspage;
 pub mod font;
+pub mod glossary;
 pub mod interact;
 pub mod metar;
 pub mod nexrad;
@@ -115,9 +116,12 @@ pub struct ViewState {
     pub page: Page,
     pub range_nm: f32,
     pub orientation: Orientation,
-    /// Index of the first weather entry shown. Clamped at draw time, since pruning can shrink the
-    /// list between frames.
+    /// Index into the weather list. Its meaning depends on `weather_decode`: the first entry
+    /// shown when browsing, the *selected* entry when decoding. Clamped at draw time, since
+    /// pruning can shrink the list between frames.
     pub weather_scroll: usize,
+    /// Show the selected report's abbreviations expanded, instead of the list.
+    pub weather_decode: bool,
     /// Draw the NEXRAD underlay on the plan view.
     pub show_weather_underlay: bool,
     /// Progress of an AHRS cage request. See [`CageState`].
@@ -135,6 +139,7 @@ impl Default for ViewState {
             range_nm: 10.0,
             orientation: Orientation::NorthUp,
             weather_scroll: 0,
+            weather_decode: false,
             show_weather_underlay: true,
             cage: CageState::Idle,
             cage_changed: None,

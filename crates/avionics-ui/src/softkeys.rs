@@ -46,6 +46,8 @@ pub enum SoftKey {
     ScrollDown,
     /// Tell the AHRS the aircraft is straight and level. Two presses: arm, then confirm.
     CageAhrs,
+    /// Expand the selected weather report's abbreviations.
+    ToggleDecode,
 }
 
 /// Which key sits in each slot for the given page.
@@ -65,7 +67,7 @@ pub fn keys_for(page: Page) -> [Option<SoftKey>; SLOTS] {
             Some(SoftKey::Page),
             Some(SoftKey::ScrollUp),
             Some(SoftKey::ScrollDown),
-            None,
+            Some(SoftKey::ToggleDecode),
             None,
         ],
         // LEVEL sits in slot 4, the bottom of the strip, deliberately as far as possible from
@@ -107,6 +109,16 @@ pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
         }
         SoftKey::ScrollUp => "UP",
         SoftKey::ScrollDown => "DOWN",
+        // Labelled with what pressing it gives you, unlike the state-labelled toggles above:
+        // there is no ambiguity about which view you are looking at, so naming the destination
+        // is more useful than naming where you already are.
+        SoftKey::ToggleDecode => {
+            if view.weather_decode {
+                "RAW"
+            } else {
+                "DECODE"
+            }
+        }
         SoftKey::CageAhrs => match view.cage {
             crate::CageState::Idle => "LEVEL",
             crate::CageState::Armed => "CONFIRM",
@@ -186,6 +198,7 @@ pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState) {
             SoftKey::ToggleUnderlay if view.show_weather_underlay => theme.good,
             // An armed cage is amber: it is one press from changing the attitude reference, and
             // that state must not look like every other key on the strip.
+            SoftKey::ToggleDecode if view.weather_decode => theme.good,
             SoftKey::CageAhrs => match view.cage {
                 crate::CageState::Armed => theme.caution,
                 crate::CageState::Done { ok: true } => theme.good,
@@ -299,9 +312,12 @@ mod tests {
     }
 
     #[test]
-    fn weather_page_leaves_two_slots_inert() {
+    fn the_weather_page_offers_scrolling_and_decoding() {
         let keys = keys_for(Page::Weather);
-        assert_eq!(keys[3], None);
-        assert_eq!(keys[4], None);
+        assert_eq!(keys[PAGE_SLOT], Some(SoftKey::Page));
+        assert_eq!(keys[1], Some(SoftKey::ScrollUp));
+        assert_eq!(keys[2], Some(SoftKey::ScrollDown));
+        assert_eq!(keys[3], Some(SoftKey::ToggleDecode));
+        assert_eq!(keys[4], None, "nothing invented to fill the last slot");
     }
 }
