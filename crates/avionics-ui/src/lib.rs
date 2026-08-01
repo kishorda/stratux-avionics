@@ -21,6 +21,7 @@
 pub mod ahrspage;
 pub mod font;
 pub mod interact;
+pub mod metar;
 pub mod nexrad;
 pub mod planview;
 pub mod projection;

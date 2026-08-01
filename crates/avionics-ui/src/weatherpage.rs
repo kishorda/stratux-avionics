@@ -15,7 +15,7 @@ use avionics_gfx::Canvas;
 use stratux_client::domain::{WeatherProduct, WeatherText};
 use stratux_client::AppState;
 
-use crate::{Layout, Ui, ViewState};
+use crate::{metar, Layout, Ui, ViewState};
 
 /// Sort priority: the products a pilot reaches for first come first.
 fn priority(product: &WeatherProduct) -> u8 {
@@ -138,6 +138,38 @@ pub fn draw(
         };
         let _ = canvas.fill_text(layout.margin, y, &heading, &label);
 
+        // Flight category badge — METARs and SPECIs only.
+        //
+        // Derived from two fields with published thresholds, and shown BESIDE the raw text rather
+        // than instead of it: the badge answers "can I go?" at a glance, the report remains the
+        // authority. Absent rather than guessed when neither field could be read.
+        //
+        // Deliberately NOT applied to TAFs. A TAF covers many hours in FM/TEMPO/BECMG periods and
+        // `summarise` has no notion of periods, so it mixes them: the lowest ceiling anywhere in
+        // the forecast against the first visibility. A real one measured in testing badged LIFR
+        // off a period eight hours out while its current period was VFR. See the test
+        // `a_taf_summarises_to_something_that_describes_no_single_moment`.
+        let category = matches!(item.product, WeatherProduct::Metar)
+            .then(|| metar::summarise(&item.body).category)
+            .flatten();
+        if let Some(category) = category {
+            let heading_w = canvas
+                .measure_text(0.0, 0.0, &heading, &label)
+                .map(|m| m.width())
+                .unwrap_or(0.0);
+            let mut badge = Paint::color(category_colour(ui, category));
+            badge.set_font(&[ui.font()]);
+            badge.set_font_size(theme.font_size_small);
+            badge.set_text_baseline(Baseline::Middle);
+            badge.set_text_align(Align::Left);
+            let _ = canvas.fill_text(
+                layout.margin + heading_w + 10.0,
+                y,
+                category.label(),
+                &badge,
+            );
+        }
+
         // Age on the right, coloured once it is old enough to matter.
         let mut age_paint = Paint::color(age_colour(ui, age));
         age_paint.set_font(&[ui.font()]);
@@ -164,8 +196,7 @@ pub fn draw(
 
         let indent = layout.margin + theme.font_size_small * 1.2;
         let available = layout.content_width - indent - layout.margin;
-        let text = truncate_to_width(canvas, &item.body, &body, available);
-        let _ = canvas.fill_text(indent, y, &text, &body);
+        draw_body_tokens(ui, canvas, &item.body, &mut body, indent, y, available);
 
         y += line;
         if y > layout.height - layout.footer_height {
@@ -268,37 +299,68 @@ pub fn format_age(age: std::time::Duration) -> String {
     }
 }
 
-/// Cut text to fit `available` pixels, appending an ellipsis when shortened.
-fn truncate_to_width(canvas: &mut Canvas, text: &str, paint: &Paint, available: f32) -> String {
-    let width = |canvas: &mut Canvas, s: &str| {
-        canvas
-            .measure_text(0.0, 0.0, s, paint)
+
+/// Colour for a flight category. Green is deliberate for VFR: it is the one state that needs no
+/// action, and colouring it like everything else would waste the strongest signal on screen.
+fn category_colour(ui: &Ui, category: metar::FlightCategory) -> avionics_gfx::femtovg::Color {
+    match category {
+        metar::FlightCategory::Vfr => ui.theme.good,
+        metar::FlightCategory::Mvfr => ui.theme.caution,
+        metar::FlightCategory::Ifr | metar::FlightCategory::Lifr => ui.theme.warning,
+    }
+}
+
+/// Draw the report body token by token, colouring the ones that carry a hazard.
+///
+/// The text is otherwise unchanged — this highlights, it does not translate. Tokens are measured
+/// and placed individually so the line still truncates at the panel edge exactly as before.
+fn draw_body_tokens(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    body: &str,
+    paint: &mut Paint,
+    x0: f32,
+    y: f32,
+    available: f32,
+) {
+    let theme = &ui.theme;
+    let space = canvas
+        .measure_text(0.0, 0.0, " ", paint)
+        .map(|m| m.width())
+        .unwrap_or(4.0);
+
+    let mut x = x0;
+    let mut in_remarks = false;
+    for token in body.split_whitespace() {
+        // Everything past RMK is free-form and full of things that merely look like fields, so it
+        // is dimmed rather than scanned. See `metar::summarise`.
+        if token == "RMK" {
+            in_remarks = true;
+        }
+
+        let width = canvas
+            .measure_text(0.0, 0.0, token, paint)
             .map(|m| m.width())
-            .unwrap_or(0.0)
-    };
+            .unwrap_or(0.0);
+        if x - x0 + width > available {
+            // Out of room: mark the truncation rather than stopping silently, so a clipped report
+            // cannot be mistaken for a short one.
+            paint.set_color(theme.text_dim);
+            let _ = canvas.fill_text(x, y, "\u{2026}", paint);
+            return;
+        }
 
-    if width(canvas, text) <= available {
-        return text.to_string();
-    }
-
-    // Binary search on character count rather than trimming one char at a time: a long TAF would
-    // otherwise cost dozens of shaping passes every frame.
-    let chars: Vec<char> = text.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let mid = (low + high).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect();
-        if width(canvas, &format!("{candidate}\u{2026}")) <= available {
-            low = mid;
+        let colour = if in_remarks {
+            theme.text_dim
         } else {
-            high = mid - 1;
-        }
-        if low == high {
-            break;
-        }
+            match metar::token_hazard(token) {
+                metar::Hazard::Warning => theme.warning,
+                metar::Hazard::Caution => theme.caution,
+                metar::Hazard::None => theme.text_secondary,
+            }
+        };
+        paint.set_color(colour);
+        let _ = canvas.fill_text(x, y, token, paint);
+        x += width + space;
     }
-    let mut out: String = chars[..low].iter().collect();
-    out.push('\u{2026}');
-    out
 }

@@ -374,12 +374,30 @@ fn status(t_ms: u64) -> wire::Status {
     }
 }
 
+/// Conditions to synthesise, one per station.
+///
+/// A spread rather than four copies of the same fine day. The weather page highlights hazards and
+/// derives a flight category, and neither can be exercised — or reviewed by eye — if every
+/// synthetic report is `10SM FEW120`. These cover VFR through LIFR plus a convective and an
+/// icing case, which is the range the display has to look right across.
+const CONDITIONS: [(&str, &str); 4] = [
+    // VFR: nothing to highlight, badge green.
+    ("KBJC", "10SM FEW120 {temp:02}/07 A3002"),
+    // MVFR on ceiling, with haze that must NOT be highlighted.
+    ("KAPA", "5SM HZ BKN025 {temp:02}/09 A3001"),
+    // IFR on both ceiling and visibility, with a thunderstorm.
+    ("KDEN", "2SM TSRA BKN008 OVC015CB {temp:02}/12 A2992"),
+    // LIFR, and freezing rain: the worst case the highlighter has to catch.
+    ("KEIK", "1/2SM FZRA VV003 M02/M04 A2988"),
+];
+
 fn weather_batch(rng: &mut Rng) -> Vec<wire::WeatherMessage> {
-    const STATIONS: [&str; 4] = ["KDEN", "KAPA", "KBJC", "KEIK"];
-    let station = STATIONS[(rng.unit() * STATIONS.len() as f64) as usize % STATIONS.len()];
+    let index = (rng.unit() * CONDITIONS.len() as f64) as usize % CONDITIONS.len();
+    let (station, conditions) = CONDITIONS[index];
     let wind_dir = (rng.range(0.0, 36.0) as u32) * 10;
     let wind_kt = rng.range(3.0, 18.0) as u32;
     let temp = rng.range(18.0, 31.0) as i32;
+    let conditions = conditions.replace("{temp:02}", &format!("{temp:02}"));
 
     vec![
         wire::WeatherMessage {
@@ -387,7 +405,7 @@ fn weather_batch(rng: &mut Rng) -> Vec<wire::WeatherMessage> {
             Location: station.into(),
             Time: "291853Z".into(),
             Data: format!(
-                "METAR {station} 291853Z {wind_dir:03}{wind_kt:02}KT 10SM FEW120 {temp:02}/07 A3002"
+                "METAR {station} 291853Z {wind_dir:03}{wind_kt:02}KT {conditions} RMK AO2 SLP123"
             ),
             LocaltimeReceived: String::new(),
         },
