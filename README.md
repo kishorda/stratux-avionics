@@ -15,27 +15,26 @@ and how to run it.
 
 | Milestone | What | State |
 | --- | --- | --- |
-| M0 | Hardware & OS bring-up survey | **nearly done** — both SDRs, GPS and panel attached and detected; **blocked on an under-voltage supply**, and GPS needs a sky view for a fix |
+| M0 | Hardware & OS bring-up survey | **nearly done** — both SDRs, GPS and panel attached and detected; supply fixed 2026-08-01; GPS still needs a sky view for a fix |
 | M1 | Rendering spike — go/no-go on the stack | **PASSED on hardware** — see [M0/M1 results](#m0--m1-results-on-hardware) |
 | M2 | Presenter abstraction + interactive dev harness | **done** — offscreen + interactive window |
 | M3 | Stratux client + replay harness | **live data flowing** — all five sockets connect, 1090 MHz decoding; not yet diffed against Stratux's web UI |
-| M4 | Traffic plan view | **renders on the panel, touch confirmed**; frame cost under radio load still unmeasured |
+| M4 | Traffic plan view | **renders on the panel, touch confirmed**; frame cost measured on a healthy board, but not yet with both radios decoding |
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; still unvalidated against an independent mosaic |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-127 tests passing, clippy clean.
+199 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
-panel, touch, all five Stratux sockets, live 1090 MHz traffic, and 60 fps with the full scene
-(now deliberately capped per page — see the frame-cost section).
-What is not proven is anything needing a sky view (GPS fix, UAT, NEXRAD validation) or an
-un-throttled power supply (frame cost under radio load, thermal soak, power cuts).
+panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
+healthy board. What is not proven is anything needing a sky view: GPS fix, UAT, NEXRAD
+validation, and frame cost with both radios actually decoding.
 
-> ⚠️ **The Pi is currently running under-voltage** (`throttled=0x50005`, clocked down to 600 MHz
-> from 900). Fix the supply before trusting any performance or thermal measurement — and before
-> running M6's power-cut test, which on an under-volted board risks causing the SD corruption it
-> exists to disprove. See the M0 section for detail.
+> ✅ **The under-voltage is fixed.** As of 2026-08-01 the board reads `throttled=0x0` at a full
+> 900 MHz, 57 °C under sustained render load. Every frame-cost figure recorded before that date was
+> taken at 600 MHz under the throttle and has been re-measured; see the frame-cost section. M6's
+> power-cut test is no longer gated on the supply.
 
 ## Layout
 
@@ -141,67 +140,63 @@ claims "OpenGl (ES) 3.0+", and the stack rested on the claim that its *runtime* 
 (`version.starts_with("OpenGL ES 2.")`) actually works on `vc4`. It does. The Slint
 `linuxkms` fallback is not needed.
 
-### Frame cost with the full scene
+### Frame cost, re-measured on a healthy board
 
-Replaying a synthetic 120 s session — 14 targets including a head-on conflict, 72 NEXRAD
-blocks, 0 decode errors:
+**Re-measured 2026-08-01** at a full 900 MHz, `throttled=0x0`, 57 °C. Everything below the
+horizontal rule in earlier revisions of this file was taken at 600 MHz under the under-voltage
+throttle and is superseded. Each run is 150 s of the same replay, per page:
 
-| | mean draw | worst draw |
-| --- | --- | --- |
-| With NEXRAD underlay | **2.14 ms** | 51.03 ms |
-| Without underlay | **2.12 ms** | 45.75 ms |
+| Page | rate | mean draw | worst draw | worst steady | core share |
+| --- | --- | --- | --- | --- | --- |
+| Plan view + NEXRAD underlay | 30 fps | **2.30 ms** | 58.6 ms (frame 1) | **30.0 ms** | 6.9% |
+| Plan view, no underlay | 30 fps | **2.25 ms** | 57.3 ms (frame 1) | **6.8 ms** | 6.8% |
+| AHRS (uncapped) | 60 fps | **2.72 ms** | 68.3 ms (frame 1) | **6.7 ms** | 16.3% |
+| Weather, decoded | 8 fps | **3.68 ms** | 141.7 ms (frame 1) | **7.4 ms** | 2.9% |
+| Weather, list | 8 fps | **4.09 ms** | 65.8 ms (frame 1) | **8.5 ms** | 3.3% |
 
-Mean draw is ~13% of the 16.7 ms budget at 60 Hz. The underlay costs essentially nothing on
-average and ~6 ms in the worst case.
+`worst steady` excludes the first 30 frames *and* the first 5 seconds. Both floors are needed:
+a frame count is reached in very different wall time at 8 Hz and 60 Hz, and an elapsed time can
+be satisfied by a single frame that took seconds to present. Reporting **which frame** the worst
+landed on is what makes the rest of this table readable.
 
-The ~44 ms worst case is **startup, not a recurring hitch**. Three runs of different lengths
-show a roughly constant frame deficit rather than one that scales with duration:
+**Every `worst draw` is frame 1.** The vc4 shader compile, the glyph atlas and the initial DSI
+modeset are paid once, before anything is on screen. The 141.7 ms on the decoded weather page is
+the largest because that page shapes twenty-seven previously unseen strings against a cold atlas;
+it is also a page the display never starts on.
 
-```
- 30 s    1166 frames    worst 44.65 ms
-125 s    6727 frames    worst 51.03 ms
-240 s   13748 frames    worst 44.21 ms
-```
+### The one recurring hitch is the NEXRAD composite
 
-`last fps` reads 60.0 in all three. Do not read an instantaneous `last fps` of 50.0 as
-sustained drops — that is a sample landing during a NEXRAD composite.
+The plan view's `worst steady` is **30.0 ms with the underlay and 6.8 ms without**, with three
+composites in 150 s. That is the whole difference, and it is the only repeating spike anywhere in
+the display. It matches `nexrad.rs`'s own estimate — roughly 14 ms for a 1024x1024 patch on a
+desktop, several times that here.
 
-> **These numbers predate the per-page frame cap.** The measurements above were taken when every
-> page drew on every vblank. The plan view is now capped at 30 fps and the weather page at 8; the
-> attitude page is still uncapped, so its figures stand unchanged. Mean and worst *draw* times are
-> per-frame costs and are unaffected — what changes is how many of those frames happen per second,
-> which roughly halves the plan view's share of a core and the GPU work behind it. The report now
-> prints a `frame cap` line so a `last fps` of 30.0 is not misread as a regression. See
-> `Page::frame_interval` for why those rates are the useful ones.
+At 30 fps a 30 ms draw overruns the 33 ms budget, so a composite costs about one frame. Three
+frames in two and a half minutes is not worth chasing yet, but the obvious lever if it ever
+matters is `MosaicConfig::texture_size`: 1024 to 512 is a quarter of the work and a quarter of the
+4 MB upload, and at 120 nm across still resolves finer than the NEXRAD bins do.
 
-### The longest run so far, and one unexplained number
+### What the per-page frame cap bought
 
-45 minutes on the AHRS page, live (not replay), with `dump1090` running:
+Capping the plan view at 30 fps roughly halved its share of a core, from 12.8% to 6.9%, with no
+visible change — at the 40 nm range a 150 kt target moves three thousandths of a pixel per frame
+at 60 Hz. The weather page at 8 fps costs 2.9%. See `Page::frame_interval`.
 
-```
-frames     : 140533
-mean draw  : 2.85 ms
-worst draw : 72.35 ms
-last fps   : 32.6
-```
+The caps are confirmed on hardware: the runs above report 30.3, 60.1 and 8.0 fps against targets
+of 30, uncapped and 8.
 
-**Mean draw held at 2.85 ms across 140k frames** — no upward drift over 45 minutes, which is
-the useful result: whatever the worst case is, it is not creeping.
+### The `32.6 fps` sample is probably resolved
 
-`last fps: 32.6` is **not explained**. Every earlier run sampled 60.0 at the same point. It is a
-single instantaneous sample taken as `SIGTERM` arrived, so it may only be catching the shutdown
-— or it may be the board throttling harder as it warms. One sample cannot distinguish those, and
-it is recorded here rather than rationalised so that it gets re-checked rather than forgotten.
+An earlier 45-minute live AHRS run sampled `last fps: 32.6` at exit where every other run read
+60.0, and it was recorded here unexplained rather than rationalised. The AHRS page now holds
+**60.1 fps across 8607 frames** on a healthy board.
 
-Neither number is a clean measurement: this run was at 600 MHz under the under-voltage throttle,
-with a throttled GPU, which is not the configuration the aircraft flies. **Re-measure after the
-supply is fixed** — that is the first thing worth doing with a healthy board, and it is what
-turns `32.6` into either a non-event or a real finding.
+That is consistent with the old sample being the under-voltage throttle, but it is **not proof**:
+this run was 150 s of replay, not 45 minutes of live data, so it cannot rule out a slow thermal
+or long-run drift. Settling it needs a long live run on the fixed supply.
 
-NEXRAD geo-referencing: `21 drawn, 0 outside, 542 bins`. Every block landed inside the
-projection, which is the failure that looks plausible while being wrong.
 
-### 60 fps despite the EMI underclock
+### Full frame rate despite the EMI underclock
 
 `config.txt` carries `sdram_freq=450`, `core_freq=450`, `arm_freq=900` — deliberate
 underclocks from Stratux issue #573 that reduce EMI. **Do not raise them**: on this box they
@@ -254,14 +249,18 @@ is linked against).
 
 ### What is still unproven
 
-- **Radio contention.** `dump1090`/`dump978` are not running, so "the renderer starves the
-  radios" — the plan's real failure mode — is entirely unmeasured. 2.14 ms on an idle Pi is
-  encouraging, not conclusive.
+- **Radio contention.** `dump1090`/`dump978` are not decoding indoors, so "the renderer starves
+  the radios" — the plan's real failure mode — is still unmeasured. The plan view now costs 6.9%
+  of a core on an otherwise idle board, which is encouraging and not conclusive: what matters is
+  SDRAM bandwidth shared with two SDRs doing USB bulk transfers, and that cannot be measured
+  without signal.
 - **Gestures.** Device discovery and coordinate scaling are confirmed; `BTN_TOUCH`, slot
   count and `ABS_MT_TRACKING_ID` lifetimes need a finger. `touch: OK` in `--check` means the
   device opened, not that tap and two-finger-tap work.
-- **Everything visual.** 13,748 frames rendered without error says nothing about whether the
-  symbology, tags, threat colouring or precipitation actually look right.
+- **Everything visual.** Frames rendered without error says nothing about whether the symbology,
+  tags, threat colouring or precipitation actually look right. The weather decode view, the
+  soft keys, the labelled compass rose and the AHRS tapes have now been seen on the panel; the
+  NEXRAD underlay's geo-referencing has not been checked against an independent mosaic.
 
 ## Deploying to the Pi
 

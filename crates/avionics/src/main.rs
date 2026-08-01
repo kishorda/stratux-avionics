@@ -658,14 +658,50 @@ struct RenderTiming {
     /// The cap in force on the last frame, so the report can say whether a low `last fps` is the
     /// intended pacing or a real shortfall.
     cap: Option<Duration>,
+
+    /// Which frame the worst draw landed on.
+    worst_at: u64,
+    /// Worst draw once the first [`WARMUP`] of running is excluded, and which frame that was.
+    ///
+    /// A single worst-draw figure cannot distinguish "the first frame built the glyph atlas" from
+    /// "there is a recurring hitch", and those call for completely different responses. Splitting
+    /// the two is what turns the number into evidence: if `worst` is large and `worst_steady` is
+    /// small, the cost was paid once at startup and nobody will ever see it.
+    worst_steady: Duration,
+    worst_steady_at: u64,
+    /// When the first frame was recorded, for the warm-up cutoff.
+    started: Option<Instant>,
 }
+
+/// How long a run is considered to be warming up.
+const WARMUP: Duration = Duration::from_secs(5);
+
+/// And how many frames. Applied together with [`WARMUP`], because neither floor is sufficient
+/// alone: a frame count is reached in very different wall time on a 60 Hz page and an 8 Hz one,
+/// and an elapsed time can be satisfied by a single frame that took seconds to present.
+const WARMUP_FRAMES: u64 = 30;
 
 impl RenderTiming {
     fn record(&mut self, draw: Duration, cap: Option<Duration>) {
         self.cap = cap;
         self.frames += 1;
         self.total += draw;
-        self.worst = self.worst.max(draw);
+        if draw > self.worst {
+            self.worst = draw;
+            self.worst_at = self.frames;
+        }
+
+        // Both floors, not either. Elapsed time alone is not enough: the clock starts at the first
+        // `record`, but the one-time costs — the vc4 shader compile, the glyph atlas, the initial
+        // DSI modeset — are paid in `end_frame` *after* it, and on this board they take seconds.
+        // That let frame 2 qualify as "steady" while still being pure start-up, which is exactly
+        // the confusion this metric exists to remove.
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let warm = self.frames > WARMUP_FRAMES && started.elapsed() > WARMUP;
+        if warm && draw > self.worst_steady {
+            self.worst_steady = draw;
+            self.worst_steady_at = self.frames;
+        }
 
         let start = *self.window_start.get_or_insert_with(Instant::now);
         self.window_frames += 1;
@@ -687,7 +723,21 @@ impl RenderTiming {
         println!("\n=== render timing ===");
         println!("  frames        : {}", self.frames);
         println!("  mean draw     : {:.2} ms", self.mean().as_secs_f64() * 1000.0);
-        println!("  worst draw    : {:.2} ms", self.worst.as_secs_f64() * 1000.0);
+        println!(
+            "  worst draw    : {:.2} ms  (frame {})",
+            self.worst.as_secs_f64() * 1000.0,
+            self.worst_at
+        );
+        if self.worst_steady > Duration::ZERO {
+            println!(
+                "  worst steady  : {:.2} ms  (frame {}, after {}s warm-up)",
+                self.worst_steady.as_secs_f64() * 1000.0,
+                self.worst_steady_at,
+                WARMUP.as_secs()
+            );
+        } else {
+            println!("  worst steady  : n/a (run shorter than the warm-up)");
+        }
         println!("  last fps      : {:.1}", self.fps);
         // Without this line a re-run of the M1 measurement reads 30.0 where it used to read 60.0
         // and looks like a regression, when it is the cap doing its job.
