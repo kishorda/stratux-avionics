@@ -216,25 +216,47 @@ fn draw_rings(
     // Cardinals get letters and the rest get tens of degrees — N, 3, 6, E, 12, 15, S ... — which
     // is the convention on every heading indicator, and keeps each label to one or two glyphs.
     // Spelling out "030" would triple the ink for no extra information.
-    for degrees in (0..360).step_by(30) {
-        let angle = match projection {
-            Some(p) => p.screen_angle_rad(degrees as f32),
-            None => (degrees as f32).to_radians(),
-        };
+    // The ticks go into two paths — one per line width — and are stroked once each rather than
+    // individually. femtovg emits a GL draw per `stroke_path`, and on the vc4's tile-based
+    // renderer every one of those carries binning cost, so twelve draws for twelve straight
+    // lines is twelve times the overhead for the same ink. `tapes.rs` already builds its scales
+    // this way.
+    let tick_angle = |degrees: i32| match projection {
+        Some(p) => p.screen_angle_rad(degrees as f32),
         // Screen angle is clockwise from up: up is -y.
-        let (sin, cos) = (angle.sin(), angle.cos());
+        None => (degrees as f32).to_radians(),
+    };
+
+    let mut cardinal_ticks = Path::new();
+    let mut minor_ticks = Path::new();
+    for degrees in (0..360).step_by(30) {
+        let (sin, cos) = tick_angle(degrees).sin_cos();
         let cardinal = degrees % 90 == 0;
         let inner = layout.outer_radius * if cardinal { 0.90 } else { 0.95 };
         let outer = layout.outer_radius;
 
-        let mut tick = Path::new();
+        let tick = if cardinal {
+            &mut cardinal_ticks
+        } else {
+            &mut minor_ticks
+        };
         tick.move_to(cx + sin * inner, cy - cos * inner);
         tick.line_to(cx + sin * outer, cy - cos * outer);
-        canvas.stroke_path(
-            &tick,
-            &Paint::color(theme.compass_tick)
-                .with_line_width(if cardinal { theme.line_width } else { 1.0 }),
-        );
+    }
+    canvas.stroke_path(
+        &minor_ticks,
+        &Paint::color(theme.compass_tick).with_line_width(1.0),
+    );
+    canvas.stroke_path(
+        &cardinal_ticks,
+        &Paint::color(theme.compass_tick).with_line_width(theme.line_width),
+    );
+
+    // Labels second. They sit a whole font size beyond the end of the ticks so the two never
+    // actually meet, but drawing them after keeps that true if the rose is ever re-proportioned.
+    for degrees in (0..360).step_by(30) {
+        let (sin, cos) = tick_angle(degrees).sin_cos();
+        let cardinal = degrees % 90 == 0;
 
         // North is the reference the pilot orients from, so it stays brighter and larger than the
         // rest; the others are a scale, and a scale that shouts competes with the traffic.

@@ -77,6 +77,45 @@ impl Page {
             Self::Ahrs => "AHRS",
         }
     }
+
+    /// How often this page is worth redrawing, or `None` to run at the panel's refresh rate.
+    ///
+    /// # Why the plan view does not need 60 Hz
+    ///
+    /// [`Layout::for_size`] gives an outer ring radius of about 187 px on the 800x480 panel, so at
+    /// the 40 nm range one pixel is roughly 0.21 nm. A 150 kt target covers 0.042 nm in a second —
+    /// **three thousandths of a pixel per frame at 60 Hz**. Even against the 2 nm ring it is under
+    /// a tenth of a pixel. The dead-reckoned motion those frames exist to smooth is an order of
+    /// magnitude below what the panel can physically show.
+    ///
+    /// What the frames do cost is a full-screen GPU composite and the memory traffic behind it, on
+    /// a board where `dump1090` and `dump978` are competing for the same SDRAM bandwidth and the
+    /// render loop holds the [`AppState`] lock for the whole of every draw. The project's own rule
+    /// is that a dropped ADS-B message is worse than a dropped frame, and these are frames nobody
+    /// can see. So they go.
+    ///
+    /// # Why the attitude page is the exception
+    ///
+    /// Roll rate during a roll-in is tens of degrees per second, which makes attitude the one
+    /// thing on this display that genuinely moves fast enough for the refresh rate to be visible.
+    /// It stays uncapped.
+    ///
+    /// # Why not redraw only on change
+    ///
+    /// Damage tracking would save more, and is rejected deliberately. If the "nothing changed"
+    /// test is ever wrong, the result is a *frozen* screen showing stale traffic — indistinguishable
+    /// at a glance from a live one, which is the worst failure this display has. A fixed lower rate
+    /// cannot fail that way, because every frame is still drawn from current state.
+    pub fn frame_interval(self) -> Option<Duration> {
+        match self {
+            Self::PlanView => Some(Duration::from_millis(1000 / 30)),
+            // Text products change when a new one is received, on the order of once a minute.
+            // Even 8 Hz is far more often than the content moves; it is this high only so the
+            // status bar's staleness clocks tick visibly and a soft key feels immediate.
+            Self::Weather => Some(Duration::from_millis(1000 / 8)),
+            Self::Ahrs => None,
+        }
+    }
 }
 
 /// Progress of a "the aircraft is straight and level" request.

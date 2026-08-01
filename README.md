@@ -27,7 +27,8 @@ and how to run it.
 127 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
-panel, touch, all five Stratux sockets, live 1090 MHz traffic, and 60 fps with the full scene.
+panel, touch, all five Stratux sockets, live 1090 MHz traffic, and 60 fps with the full scene
+(now deliberately capped per page — see the frame-cost section).
 What is not proven is anything needing a sky view (GPS fix, UAT, NEXRAD validation) or an
 un-throttled power supply (frame cost under radio load, thermal soak, power cuts).
 
@@ -164,6 +165,14 @@ show a roughly constant frame deficit rather than one that scales with duration:
 
 `last fps` reads 60.0 in all three. Do not read an instantaneous `last fps` of 50.0 as
 sustained drops — that is a sample landing during a NEXRAD composite.
+
+> **These numbers predate the per-page frame cap.** The measurements above were taken when every
+> page drew on every vblank. The plan view is now capped at 30 fps and the weather page at 8; the
+> attitude page is still uncapped, so its figures stand unchanged. Mean and worst *draw* times are
+> per-frame costs and are unaffected — what changes is how many of those frames happen per second,
+> which roughly halves the plan view's share of a core and the GPU work behind it. The report now
+> prints a `frame cap` line so a `last fps` of 30.0 is not misread as a regression. See
+> `Page::frame_interval` for why those rates are the useful ones.
 
 ### The longest run so far, and one unexplained number
 

@@ -318,6 +318,12 @@ fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, half_h: f32, px_per_deg: f32)
     paint.set_text_align(Align::Center);
     paint.set_text_baseline(Baseline::Middle);
 
+    // Two paths, one per line width, stroked once each. Individually this was a dozen
+    // `stroke_path` calls, and femtovg issues a GL draw for every one of them — a dozen tile
+    // binning passes on the vc4 to put a dozen straight lines on screen.
+    let mut majors = Path::new();
+    let mut minors = Path::new();
+
     for step in 1..=((PITCH_RANGE_DEG / 5.0) as i32 + 1) {
         let deg = step * 5;
         let major = deg % 10 == 0;
@@ -331,19 +337,39 @@ fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, half_h: f32, px_per_deg: f32)
                 continue;
             }
 
-            let mut line = Path::new();
-            line.move_to(-half, y);
-            line.line_to(half, y);
-            canvas.stroke_path(
-                &line,
-                &Paint::color(theme.text_primary).with_line_width(if major { 1.6 } else { 1.0 }),
-            );
+            let rung = if major { &mut majors } else { &mut minors };
+            rung.move_to(-half, y);
+            rung.line_to(half, y);
+        }
+    }
 
-            if major {
-                let text = format!("{deg}");
-                let _ = canvas.fill_text(-half - 14.0, y, &text, &paint);
-                let _ = canvas.fill_text(half + 14.0, y, &text, &paint);
+    canvas.stroke_path(
+        &minors,
+        &Paint::color(theme.text_primary).with_line_width(1.0),
+    );
+    canvas.stroke_path(
+        &majors,
+        &Paint::color(theme.text_primary).with_line_width(1.6),
+    );
+
+    // Labels last, so a rung can never land on top of a digit. They sit 14 px beyond the ends of
+    // the rungs, so in practice the two never meet; ordering it this way keeps that true if the
+    // ladder is ever widened.
+    for step in 1..=((PITCH_RANGE_DEG / 5.0) as i32 + 1) {
+        let deg = step * 5;
+        if deg % 10 != 0 {
+            continue;
+        }
+        let half = half_h * 0.30;
+        let text = format!("{deg}");
+
+        for sign in [-1.0f32, 1.0] {
+            let y = -sign * deg as f32 * px_per_deg;
+            if y.abs() > half_h * 1.6 {
+                continue;
             }
+            let _ = canvas.fill_text(-half - 14.0, y, &text, &paint);
+            let _ = canvas.fill_text(half + 14.0, y, &text, &paint);
         }
     }
 }
@@ -352,6 +378,9 @@ fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, half_h: f32, px_per_deg: f32)
 fn draw_roll_scale(ui: &Ui, canvas: &mut Canvas, cx: f32, cy: f32, radius: f32, roll_deg: f32) {
     let theme = &ui.theme;
 
+    // Every tick shares a colour and a width, so they all go in one path and one draw. Only the
+    // length varies, and that is geometry rather than paint state.
+    let mut ticks = Path::new();
     for tick in ROLL_TICKS {
         for sign in [-1.0f32, 1.0] {
             // Measured from straight up, hence the -90 degree offset.
@@ -362,15 +391,14 @@ fn draw_roll_scale(ui: &Ui, canvas: &mut Canvas, cx: f32, cy: f32, radius: f32, 
                 radius * 0.07
             };
             let (sin, cos) = angle.sin_cos();
-            let mut line = Path::new();
-            line.move_to(cx + cos * radius, cy + sin * radius);
-            line.line_to(cx + cos * (radius - len), cy + sin * (radius - len));
-            canvas.stroke_path(
-                &line,
-                &Paint::color(theme.text_secondary).with_line_width(1.4),
-            );
+            ticks.move_to(cx + cos * radius, cy + sin * radius);
+            ticks.line_to(cx + cos * (radius - len), cy + sin * (radius - len));
         }
     }
+    canvas.stroke_path(
+        &ticks,
+        &Paint::color(theme.text_secondary).with_line_width(1.4),
+    );
 
     // Pointer: a triangle that rotates with the aircraft, against the fixed scale above.
     let angle = (-roll_deg - 90.0).to_radians();

@@ -193,6 +193,92 @@ fn install_signal_handlers() -> Result<()> {
 /// Shared between the ingest task and the render loop.
 type Shared = Arc<Mutex<AppState>>;
 
+/// Longest the loop will sleep without checking for input.
+///
+/// The frame budget is spent in slices this size rather than in one go, so that a press is noticed
+/// promptly even on a page that only redraws eight times a second. Small enough that input latency
+/// stays under a frame at 60 Hz; large enough that an idle weather page wakes a handful of times
+/// per frame rather than continuously.
+const FRAME_SLICE: Duration = Duration::from_millis(8);
+
+/// Paces the render loop to the rate the current page is actually worth redrawing at.
+///
+/// The page flip already blocks at the panel's refresh rate, so this only ever slows the loop
+/// down. See [`avionics_ui::Page::frame_interval`] for why that is worth doing.
+#[derive(Default)]
+struct FramePacer {
+    next_due: Option<Instant>,
+}
+
+impl FramePacer {
+    /// When the next frame should start, or `None` when this page runs uncapped.
+    fn next_due(&mut self, interval: Option<Duration>) -> Option<Instant> {
+        let Some(interval) = interval else {
+            self.next_due = None;
+            return None;
+        };
+        let now = Instant::now();
+        // A deadline already in the past means the last frame overran, or the page just changed to
+        // a different rate. Resynchronise from now rather than carrying the debt forward: the
+        // frames that were missed are worthless once their moment has passed, and trying to catch
+        // up would burst at full rate for exactly as long as the loop was behind.
+        let due = match self.next_due {
+            Some(due) if due > now => due,
+            _ => now,
+        };
+        self.next_due = Some(due + interval);
+        Some(due)
+    }
+}
+
+/// Poll the touchscreen, disabling it permanently on error.
+#[cfg(feature = "kms")]
+fn poll_touch(touch: &mut Option<avionics_input::TouchReader>) -> Vec<avionics_input::Gesture> {
+    let Some(reader) = touch.as_mut() else {
+        return Vec::new();
+    };
+    match reader.poll() {
+        Ok(gestures) => gestures,
+        Err(e) => {
+            // Drop the device rather than erroring every frame for the rest of the flight.
+            tracing::error!(error = %e, "touch input failed; disabling it");
+            *touch = None;
+            Vec::new()
+        }
+    }
+}
+
+/// Wait out the rest of the frame's budget, staying responsive to touch.
+///
+/// Sleeping the whole budget in one go would put up to 125 ms between a press on the weather page
+/// and anything visibly happening, which trades a real cost for the frames it saves. Instead the
+/// wait runs in [`FRAME_SLICE`] slices and returns the instant a gesture appears — so capping the
+/// frame rate leaves the display *more* responsive to input than polling once per 60 Hz frame did,
+/// not less.
+///
+/// A `poll(2)` on the evdev fd would sleep exactly until an event rather than waking each slice,
+/// but every wake is one non-blocking read returning `EAGAIN` in a few microseconds. Even on the
+/// slowest page that is well under a tenth of a percent of a core, which does not pay for plumbing
+/// the file descriptor out of `avionics-input` and adding a `poll` feature to `nix`.
+#[cfg(feature = "kms")]
+fn wait_for_frame(
+    touch: &mut Option<avionics_input::TouchReader>,
+    due: Option<Instant>,
+) -> Vec<avionics_input::Gesture> {
+    let mut gestures = poll_touch(touch);
+    let Some(due) = due else {
+        return gestures;
+    };
+    while gestures.is_empty() {
+        let Some(remaining) = due.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        std::thread::sleep(remaining.min(FRAME_SLICE));
+        gestures = poll_touch(touch);
+    }
+    gestures
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -267,6 +353,7 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
     let mut view = args.view.clone();
     let mut timing = RenderTiming::default();
+    let mut pacer = FramePacer::default();
 
     println!("{DESKTOP_KEYS}");
 
@@ -274,11 +361,32 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
         if args.frames != 0 && timing.frames >= args.frames {
             break;
         }
-        if presenter.pump()? == Pump::Exit {
+
+        // The same pacing the panel gets, so what is seen and measured here is what the panel
+        // will do. The window is pumped every slice rather than once per frame, so it stays
+        // responsive through a long weather-page budget instead of appearing hung.
+        let interval = view.page.frame_interval();
+        let due = pacer.next_due(interval);
+        let mut inputs = Vec::new();
+        let mut exit = false;
+        loop {
+            if presenter.pump()? == Pump::Exit {
+                exit = true;
+                break;
+            }
+            inputs.extend(presenter.drain_input());
+            if !inputs.is_empty() {
+                break;
+            }
+            let Some(remaining) = due.and_then(|d| d.checked_duration_since(Instant::now())) else {
+                break;
+            };
+            std::thread::sleep(remaining.min(FRAME_SLICE));
+        }
+        if exit {
             break;
         }
 
-        let inputs = presenter.drain_input();
         if !inputs.is_empty() {
             let (w, h) = presenter.size();
             let layout = Layout::for_size(w as f32, h as f32, &ui.theme);
@@ -301,7 +409,7 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
         let canvas = presenter.begin_frame(theme.background)?;
         let started = Instant::now();
         let _stats = draw_frame(&mut ui, canvas, &state, &view);
-        timing.record(started.elapsed());
+        timing.record(started.elapsed(), interval);
         presenter.end_frame()?;
     }
 
@@ -547,10 +655,14 @@ struct RenderTiming {
     fps: f32,
     window_start: Option<Instant>,
     window_frames: u64,
+    /// The cap in force on the last frame, so the report can say whether a low `last fps` is the
+    /// intended pacing or a real shortfall.
+    cap: Option<Duration>,
 }
 
 impl RenderTiming {
-    fn record(&mut self, draw: Duration) {
+    fn record(&mut self, draw: Duration, cap: Option<Duration>) {
+        self.cap = cap;
         self.frames += 1;
         self.total += draw;
         self.worst = self.worst.max(draw);
@@ -577,6 +689,15 @@ impl RenderTiming {
         println!("  mean draw     : {:.2} ms", self.mean().as_secs_f64() * 1000.0);
         println!("  worst draw    : {:.2} ms", self.worst.as_secs_f64() * 1000.0);
         println!("  last fps      : {:.1}", self.fps);
+        // Without this line a re-run of the M1 measurement reads 30.0 where it used to read 60.0
+        // and looks like a regression, when it is the cap doing its job.
+        match self.cap {
+            Some(cap) => println!(
+                "  frame cap     : {:.0} fps (last page shown)",
+                1.0 / cap.as_secs_f64()
+            ),
+            None => println!("  frame cap     : none — paced by the page flip"),
+        }
         println!("  wx composites : {}", mosaic.composites);
         println!(
             "  wx blocks     : {} drawn, {} outside, {} bins",
@@ -643,6 +764,8 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
         Source::Replay { .. } => None,
     };
 
+    let mut pacer = FramePacer::default();
+
     tracing::info!("rendering to the panel; Ctrl-C to stop");
     while !SHUTDOWN.load(Ordering::SeqCst) {
         if args.frames != 0 && timing.frames >= args.frames {
@@ -651,28 +774,23 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
 
         pump_cage(&mut view, &cage_tx, &cage_rx, &cage_target, &runtime);
 
-        if let Some(reader) = touch.as_mut() {
-            match reader.poll() {
-                Ok(gestures) if !gestures.is_empty() => {
-                    let layout = Layout::for_size(size.0 as f32, size.1 as f32, &ui.theme);
-                    let guard = state.lock().expect("app state mutex poisoned");
-                    for gesture in gestures {
-                        apply_gesture(&ui, &layout, &mut view, &guard, gesture);
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    // Drop the device rather than erroring every frame for the rest of the flight.
-                    tracing::error!(error = %e, "touch input failed; disabling it");
-                    touch = None;
-                }
+        // Hold here until this page's next frame is due, polling touch throughout. On the
+        // attitude page the budget is `None` and this is a single poll, leaving the page flip as
+        // the only thing pacing the loop, exactly as before.
+        let interval = view.page.frame_interval();
+        let gestures = wait_for_frame(&mut touch, pacer.next_due(interval));
+        if !gestures.is_empty() {
+            let layout = Layout::for_size(size.0 as f32, size.1 as f32, &ui.theme);
+            let guard = state.lock().expect("app state mutex poisoned");
+            for gesture in gestures {
+                apply_gesture(&ui, &layout, &mut view, &guard, gesture);
             }
         }
 
         let canvas = presenter.begin_frame(theme.background)?;
         let started = Instant::now();
         let _stats = draw_frame(&mut ui, canvas, &state, &view);
-        timing.record(started.elapsed());
+        timing.record(started.elapsed(), interval);
         // Blocks until the page flip completes, which is what paces us to the panel refresh.
         presenter.end_frame()?;
     }
@@ -752,7 +870,7 @@ fn run_offscreen(args: &Args, state: Shared) -> Result<()> {
         let canvas = presenter.begin_frame(theme.background)?;
         let draw_started = Instant::now();
         let stats = draw_frame(&mut ui, canvas, &state, &view);
-        timing.record(draw_started.elapsed());
+        timing.record(draw_started.elapsed(), Some(frame_interval));
         presenter.end_frame()?;
 
         let is_last = index + 1 == total;
@@ -784,4 +902,71 @@ fn run_offscreen(args: &Args, state: Shared) -> Result<()> {
 #[cfg(not(feature = "offscreen"))]
 fn run_offscreen(_args: &Args, _state: Shared) -> Result<()> {
     bail!("this binary was built without the `offscreen` feature")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const THIRTY_HZ: Duration = Duration::from_millis(1000 / 30);
+
+    #[test]
+    fn an_uncapped_page_never_waits() {
+        let mut pacer = FramePacer::default();
+        assert_eq!(pacer.next_due(None), None);
+    }
+
+    #[test]
+    fn a_cap_holds_a_fixed_cadence_rather_than_drifting() {
+        // Each deadline is one interval after the *previous deadline*, not after whenever the
+        // frame happened to finish. Measuring from frame end instead would add the draw time and
+        // the page-flip wait to every interval, so a nominal 30 fps would settle nearer 20.
+        let mut pacer = FramePacer::default();
+        let first = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        let second = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        let third = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        assert_eq!(second - first, THIRTY_HZ);
+        assert_eq!(third - second, THIRTY_HZ);
+    }
+
+    #[test]
+    fn falling_behind_resynchronises_instead_of_bursting() {
+        // A frame that overran leaves the deadline in the past. Carrying that debt forward would
+        // make the loop run flat out until it had "caught up" on frames whose moment has gone —
+        // which is exactly the load the cap exists to avoid, arriving precisely when the board is
+        // already struggling.
+        let mut pacer = FramePacer::default();
+        pacer.next_due(Some(THIRTY_HZ));
+        // Simulate a long overrun by pushing the stored deadline well into the past.
+        pacer.next_due = Some(Instant::now() - Duration::from_secs(5));
+
+        // The deadline must be re-anchored to *now*. Asserting only that it is in the past would
+        // pass for the buggy version too — five seconds ago is also in the past — so anchor the
+        // comparison to an instant sampled before the call.
+        let before = Instant::now();
+        let due = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        assert!(
+            due >= before,
+            "a five-second-old deadline was carried forward instead of being reset to now"
+        );
+
+        // And the debt must not persist: the frame after it is due one interval from now, not
+        // still somewhere in the backlog.
+        let next = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        assert!(next > before, "the deadline after a resync is still in the past");
+        assert_eq!(next - due, THIRTY_HZ, "cadence resumes from now, not from the debt");
+    }
+
+    #[test]
+    fn switching_to_an_uncapped_page_forgets_the_old_deadline() {
+        // Otherwise a stale deadline from the weather page's 125 ms budget would survive the
+        // switch and stall the first frame of the attitude page behind it.
+        let mut pacer = FramePacer::default();
+        pacer.next_due(Some(Duration::from_millis(125)));
+        assert_eq!(pacer.next_due(None), None);
+        assert!(pacer.next_due.is_none());
+
+        let due = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
+        assert!(due <= Instant::now(), "the first frame back should not wait");
+    }
 }

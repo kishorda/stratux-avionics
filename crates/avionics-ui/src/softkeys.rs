@@ -177,18 +177,21 @@ pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState) {
     edge.line_to(layout.content_width, layout.height - layout.footer_height);
     canvas.stroke_path(&edge, &Paint::color(theme.text_dim).with_line_width(1.0));
 
+    // All four dividers in one path and one draw: they share a colour and a width, and each
+    // separate `stroke_path` costs a GL draw call on a board where those are not free.
+    let mut dividers = Path::new();
+    for slot in 1..SLOTS {
+        let (x, y, w, _) = slot_rect(&layout, slot);
+        dividers.move_to(x + layout.margin, y);
+        dividers.line_to(x + w - layout.margin, y);
+    }
+    canvas.stroke_path(
+        &dividers,
+        &Paint::color(crate::theme::faded(theme.text_dim, 0.6)).with_line_width(1.0),
+    );
+
     for (slot, key) in keys.iter().enumerate() {
         let (x, y, w, h) = slot_rect(&layout, slot);
-
-        if slot > 0 {
-            let mut divider = Path::new();
-            divider.move_to(x + layout.margin, y);
-            divider.line_to(x + w - layout.margin, y);
-            canvas.stroke_path(
-                &divider,
-                &Paint::color(crate::theme::faded(theme.text_dim, 0.6)).with_line_width(1.0),
-            );
-        }
 
         let Some(key) = key else { continue };
 
