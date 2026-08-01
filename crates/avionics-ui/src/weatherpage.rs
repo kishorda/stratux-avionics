@@ -8,6 +8,7 @@
 //! can be twenty minutes stale while the one next to it is current, and nothing on the wire warns
 //! you about that.
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use avionics_gfx::femtovg::{Align, Baseline, Paint, Path};
@@ -488,10 +489,17 @@ fn draw_decoded(
     meaning.set_text_baseline(Baseline::Middle);
     meaning.set_text_align(Align::Left);
 
-    // Two columns: a report can carry a dozen codes and one column would run off the bottom.
-    let column_w = (layout.content_width - layout.margin * 2.0) * 0.5;
-    let rows_available = (((layout.height - layout.footer_height) - y) / (line * 0.95)).floor();
-    let rows = (rows_available.max(1.0) as usize).max(1);
+    // One column while the list fits, two once it does not.
+    //
+    // Two columns halve the width each meaning gets, and a good many of them ("visual range
+    // follows; also separates temperature and dew point") do not survive that. So the second
+    // column is only introduced when the alternative is losing entries off the bottom — a full
+    // definition beats a tidy grid, and the common case is a report short enough not to need it.
+    let rows_available = (((layout.height - layout.footer_height) - y) / (line * 0.95))
+        .floor()
+        .max(1.0) as usize;
+    let (columns, rows) = expansion_layout(codes.len(), rows_available);
+    let column_w = (layout.content_width - layout.margin * 2.0) / columns as f32;
 
     let code_column = codes
         .iter()
@@ -504,8 +512,13 @@ fn draw_decoded(
         .fold(0.0f32, f32::max)
         + theme.font_size_small * 0.8;
 
+    // What a meaning has to fit in. Without this the right column's text slid straight under the
+    // soft-key strip and the left column's ran into the right one — the strip is drawn after this,
+    // so the overrun was not clipped, it was silently covered.
+    let meaning_w = column_w - code_column - theme.font_size_small;
+
     for (i, (code, text)) in codes.iter().enumerate() {
-        if i >= rows * 2 {
+        if i >= rows * columns {
             break;
         }
         let column = i / rows;
@@ -521,7 +534,72 @@ fn draw_decoded(
             metar::Hazard::None => theme.text_primary,
         });
         let _ = canvas.fill_text(x, ry, *code, &code_paint);
-        let _ = canvas.fill_text(x + code_column, ry, *text, &meaning);
+        let fitted = fit_text(canvas, text, &meaning, meaning_w);
+        let _ = canvas.fill_text(x + code_column, ry, fitted.as_ref(), &meaning);
+    }
+
+    // Never drop entries silently — that is the complaint this whole rewrite came from. Needs a
+    // report carrying more codes than the panel has rows for, which is beyond anything seen so
+    // far, but "beyond anything seen so far" is not the same as "cannot happen".
+    let shown = (rows * columns).min(codes.len());
+    if shown < codes.len() {
+        let mut more = Paint::color(theme.text_dim);
+        more.set_font(&[ui.font()]);
+        more.set_font_size(theme.font_size_small);
+        more.set_text_baseline(Baseline::Middle);
+        more.set_text_align(Align::Right);
+        let _ = canvas.fill_text(
+            layout.content_width - layout.margin,
+            y + rows as f32 * line * 0.95,
+            format!("+{} more", codes.len() - shown),
+            &more,
+        );
+    }
+}
+
+/// How to lay `count` expansions out in `rows_available` rows: `(columns, rows per column)`.
+///
+/// One column while the list fits, two once it does not. Two columns halve the width each meaning
+/// gets, and a good many of them ("visual range follows; also separates temperature and dew point")
+/// do not survive that — so the second column is introduced only when the alternative is losing
+/// entries off the bottom. A full definition beats a tidy grid.
+pub fn expansion_layout(count: usize, rows_available: usize) -> (usize, usize) {
+    let rows_available = rows_available.max(1);
+    let columns = if count <= rows_available { 1 } else { 2 };
+    // Balanced rather than filling the first column: 27 entries become two columns of 14 and 13,
+    // not one of 24 and one of 3.
+    let rows = count.div_ceil(columns).max(1).min(rows_available);
+    (columns, rows)
+}
+
+/// Shorten `text` until it fits `width`, marking the cut with an ellipsis.
+///
+/// Borrows when it already fits, which is the usual case, so the common path allocates nothing.
+fn fit_text<'a>(canvas: &mut Canvas, text: &'a str, paint: &Paint, width: f32) -> Cow<'a, str> {
+    let measure = |canvas: &mut Canvas, s: &str| {
+        canvas
+            .measure_text(0.0, 0.0, s, paint)
+            .map(|m| m.width())
+            .unwrap_or(0.0)
+    };
+    if width <= 0.0 || measure(canvas, text) <= width {
+        return Cow::Borrowed(text);
+    }
+    // Walk back a character at a time from a proportional first guess. Character widths vary, so
+    // the guess is a starting point and not an answer.
+    let mut end = text.len();
+    loop {
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            return Cow::Borrowed("");
+        }
+        let candidate = format!("{}\u{2026}", &text[..end]);
+        if measure(canvas, &candidate) <= width {
+            return Cow::Owned(candidate);
+        }
+        end -= 1;
     }
 }
 
@@ -571,4 +649,53 @@ fn draw_wrapped_tokens(
         x += width + space;
     }
     y + line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expansion_layout;
+
+    #[test]
+    fn a_short_list_stays_in_one_full_width_column() {
+        // The common case, and the one worth protecting: a single column gives each meaning the
+        // whole panel width, so nothing has to be truncated.
+        for count in 1..=20 {
+            let (columns, rows) = expansion_layout(count, 24);
+            assert_eq!(columns, 1, "{count} entries should not need a second column");
+            assert_eq!(rows, count);
+        }
+    }
+
+    #[test]
+    fn a_long_list_splits_into_balanced_columns() {
+        // 27 entries into 14 and 13, not 24 and 3. Filling the first column to the bottom before
+        // starting the second leaves a nearly empty column beside a full one, and pushes the last
+        // rows down to the footer for no reason.
+        let (columns, rows) = expansion_layout(27, 24);
+        assert_eq!(columns, 2);
+        assert_eq!(rows, 14);
+    }
+
+    #[test]
+    fn the_layout_never_claims_more_rows_than_it_has() {
+        // `rows` indexes screen positions, so a value above `rows_available` would draw the tail
+        // of each column into the footer and off the bottom of the panel.
+        for count in [0, 1, 5, 27, 60, 500] {
+            for available in [1, 3, 24, 40] {
+                let (columns, rows) = expansion_layout(count, available);
+                assert!(rows <= available, "{count} in {available}: rows {rows}");
+                assert!(rows >= 1, "{count} in {available}: rows must be usable");
+                assert!((1..=2).contains(&columns));
+            }
+        }
+    }
+
+    #[test]
+    fn overflow_is_detectable_rather_than_silent() {
+        // When capacity really is short the caller draws a "+N more" note. That only works if the
+        // shortfall is visible in these numbers, so check the arithmetic the caller relies on.
+        let (columns, rows) = expansion_layout(60, 10);
+        assert!(rows * columns < 60, "capacity should be short here");
+        assert_eq!(60 - rows * columns, 40);
+    }
 }

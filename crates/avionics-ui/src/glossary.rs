@@ -1,19 +1,43 @@
 //! METAR/TAF abbreviations, and how to find the ones in a report.
 //!
-//! Transcribed from the NWS/FAA *METAR/TAF List of Abbreviations and Acronyms*
-//! (<https://www.weather.gov/media/wrh/mesowest/metar_decode_key.pdf>).
+//! # Sources
+//!
+//! 1. The NWS/FAA *METAR/TAF List of Abbreviations and Acronyms*
+//!    (<https://www.weather.gov/media/wrh/mesowest/metar_decode_key.pdf>), pages 1–3: an
+//!    alphabetical glossary of vocabulary.
+//! 2. **The same PDF's page 4**, *Key to Decode an ASOS (METAR) Observation*. This is a different
+//!    kind of document — it describes the *structure* of a report field by field, which is where
+//!    `RMK`, the `A` altimeter prefix, the `Tsnnnnnnn` hourly temperature group and the shapes of
+//!    the wind, visibility and temperature groups are defined. An earlier version of this module
+//!    transcribed only pages 1–3, which is why a plain METAR expanded to two entries: every
+//!    structured group in it fell straight through.
+//! 3. TAF change groups (`TAF`, `FM`, `TEMPO`, `BECMG`, `PROB`, `NSW`, `WS`, `AMD`, `CNL`, `NIL`)
+//!    come from FMH-1 chapter 5, **not** from the PDF. Despite its title, that document contains
+//!    no TAF forecast vocabulary at all. These are marked in the table below.
 //!
 //! # What this is, and what it is not
 //!
-//! The source is an **alphabetical glossary**, not a grammar. It can say that `BKN` means broken;
-//! it cannot say that `BKN008` is a ceiling at 800 feet, because it carries no field order and no
-//! syntax. So this module expands vocabulary and nothing more — it never claims to have
-//! understood a report.
+//! Source 1 is a glossary, not a grammar: it can say that `BKN` means broken, but not that
+//! `BKN008` is a ceiling at 800 feet. Source 2 supplies group *shapes* — enough to know that the
+//! `KT` in `27015G35KT` is the knots suffix and the `G` is a gust — but this module still does not
+//! interpret values. It expands vocabulary and locates it; it never claims to have understood a
+//! report.
 //!
-//! That is exactly why it is safe to ship. [`explain`] returns the codes it recognises and stays
-//! silent about everything else. Being silent is a correct answer here; guessing would not be.
+//! That is what makes it safe to ship. [`explain`] returns the codes it recognises and stays silent
+//! about everything else. Being silent is a correct answer here; guessing would not be.
 //! Interpretation of ceiling, visibility and hazards lives in [`crate::metar`], which parses a
 //! deliberately narrow slice of the real grammar.
+//!
+//! # Deliberate silences
+//!
+//! Some tokens are left unexplained on purpose, because the same shape means different things in
+//! different places and this module has no notion of place:
+//!
+//! * `P0003` in remarks is an hourly precipitation amount, but `P6SM` in the body means "greater
+//!   than". `P` is only decomposed where a unit disambiguates it.
+//! * The all-digit remark groups (`60009`, `10066`, `21012`, `58033`) are defined on page 4 but
+//!   have no letter to key on, so matching them would mean matching bare numbers.
+//! * A TAF validity period (`2918/3024`) has no code to attach a meaning to.
 //!
 //! # Omissions
 //!
@@ -33,10 +57,12 @@ static ENTRIES: &[(&str, &str)] = &[
     ("+", "heavy intensity"),
     ("-", "light intensity"),
     ("/", "visual range follows; also separates temperature and dew point"),
+    ("A", "altimeter setting, inches of mercury"),  // page 4
     ("ACC", "altocumulus castellanus"),
     ("ACFT", "aircraft"),
     ("ACSL", "altocumulus standing lenticular cloud"),
     ("ALP", "airport location point"),
+    ("AMD", "amended forecast"),  // TAF
     ("AO1", "automated station without precipitation discriminator"),
     ("AO2", "automated station with precipitation discriminator"),
     ("APCH", "approach"),
@@ -46,6 +72,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("AUTO", "fully automated report"),
     ("B", "began"),
     ("BC", "patches"),
+    ("BECMG", "becoming — gradual change over the period"),  // TAF
     ("BKN", "broken"),
     ("BL", "blowing"),
     ("BR", "mist"),
@@ -60,6 +87,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("CHINO", "sky condition at secondary location not available"),
     ("CIG", "ceiling"),
     ("CLR", "clear"),
+    ("CNL", "cancelled"),  // TAF
     ("CONS", "continuous"),
     ("COR", "correction to a previously disseminated observation"),
     ("DR", "low drifting"),
@@ -75,6 +103,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("FG", "fog"),
     ("FIBI", "filed but impracticable to transmit"),
     ("FIRST", "first observation after a break in coverage"),
+    ("FM", "from — rapid change beginning at this time"),  // TAF
     ("FROPA", "frontal passage"),
     ("FRQ", "frequent"),
     ("FT", "feet"),
@@ -102,8 +131,10 @@ static ENTRIES: &[(&str, &str)] = &[
     ("MT", "mountains"),
     ("N", "north"),
     ("NE", "northeast"),
+    ("NIL", "none, or no report available"),  // TAF
     ("NOSPECI", "no SPECI reports are taken at the station"),
     ("NOTAM", "Notice to Airmen"),
+    ("NSW", "no significant weather"),  // TAF
     ("NW", "northwest"),
     ("OCNL", "occasional"),
     ("OHD", "overhead"),
@@ -118,10 +149,12 @@ static ENTRIES: &[(&str, &str)] = &[
     ("PRES", "pressure"),
     ("PRESFR", "pressure falling rapidly"),
     ("PRESRR", "pressure rising rapidly"),
+    ("PROB", "probability of occurrence, per cent"),  // TAF
     ("PWINO", "precipitation identifier sensor not available"),
     ("PY", "spray"),
     ("R", "right (runway designation), runway"),
     ("RA", "rain"),
+    ("RMK", "remarks follow"),  // page 4
     ("RTD", "routine delayed (late) observation"),
     ("RV", "reportable value"),
     ("RVR", "runway visual range"),
@@ -147,7 +180,10 @@ static ENTRIES: &[(&str, &str)] = &[
     ("SS", "sandstorm"),
     ("STN", "station"),
     ("SW", "snow shower, southwest"),
+    ("T", "hourly temperature and dew point, tenths of a degree Celsius"),  // page 4
+    ("TAF", "terminal aerodrome forecast"),  // TAF
     ("TCU", "towering cumulus"),
+    ("TEMPO", "temporary fluctuations, under one hour each"),  // TAF
     ("TS", "thunderstorm"),
     ("TSNO", "thunderstorm information not available"),
     ("TWR", "tower"),
@@ -164,6 +200,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("VV", "vertical visibility"),
     ("W", "west"),
     ("WND", "wind"),
+    ("WS", "wind shear"),  // TAF
     ("WSHFT", "wind shift"),
     ("Z", "zulu (Coordinated Universal Time)"),
 ];
@@ -176,15 +213,195 @@ pub fn lookup(code: &str) -> Option<&'static str> {
         .map(|i| ENTRIES[i].1)
 }
 
+/// Is `s` exactly `n` ASCII digits?
+fn digits(s: &str, n: usize) -> bool {
+    s.len() == n && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Is `s` one or more ASCII digits?
+fn all_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Strip a leading `M` or `P` value qualifier, recording it.
+///
+/// Page 4 uses both to bound a reportable value: `M1/4SM` is below the lowest reportable
+/// visibility, `P6SM` above the highest. Only ever called where a unit follows, because a bare
+/// `Pnnnn` in remarks is a precipitation amount instead — see the module note.
+fn strip_bound<'a>(s: &'a str, out: &mut Vec<&'static str>) -> &'a str {
+    if let Some(rest) = s.strip_prefix('M') {
+        out.push("M");
+        rest
+    } else if let Some(rest) = s.strip_prefix('P') {
+        out.push("P");
+        rest
+    } else {
+        s
+    }
+}
+
+/// The structured group shapes from page 4 of the source, tried in order.
+///
+/// Returns the codes in the order they appear *within the token*, so the expansion list reads in
+/// the same direction as the report. Each arm insists on the full shape — a partial match returns
+/// nothing and the token falls through to the next arm — because a rule that fires on a near-miss
+/// is how a station identifier ends up defined as a runway.
+fn structured_codes(token: &str) -> Vec<&'static str> {
+    // Wind: dddffKT, dddffGfmfmKT, VRBffKT, 00000KT.
+    if let Some(head) = token.strip_suffix("KT") {
+        let mut out = Vec::new();
+        let head = match head.strip_prefix("VRB") {
+            Some(rest) => {
+                out.push("VRB");
+                rest
+            }
+            None => head,
+        };
+        let (speed, gust) = match head.split_once('G') {
+            Some((a, b)) => (a, Some(b)),
+            None => (head, None),
+        };
+        if all_digits(speed) && gust.is_none_or(all_digits) {
+            if gust.is_some() {
+                out.push("G");
+            }
+            out.push("KT");
+            return out;
+        }
+    }
+
+    // Variable wind direction, reported alongside the wind group: 180V240.
+    if let Some((from, to)) = token.split_once('V') {
+        if digits(from, 3) && digits(to, 3) {
+            return vec!["V"];
+        }
+    }
+
+    // Date/time: always appended with Z. Six digits in a METAR, four in a remark.
+    if let Some(head) = token.strip_suffix('Z') {
+        if digits(head, 6) || digits(head, 4) {
+            return vec!["Z"];
+        }
+    }
+
+    // Visibility: whole miles or a fraction, appended with SM, optionally bounded by M or P.
+    //
+    // The fraction slash is deliberately not reported as `/`. That entry means "visual range
+    // follows, or separates temperature and dew point" — neither of which is what the slash in
+    // `1/2SM` is doing, and a definition that does not fit is worse than no definition.
+    if let Some(head) = token.strip_suffix("SM") {
+        let mut out = Vec::new();
+        let head = strip_bound(head, &mut out);
+        let numeric = match head.split_once('/') {
+            Some((whole, part)) => all_digits(whole) && all_digits(part),
+            None => all_digits(head),
+        };
+        if numeric {
+            out.push("SM");
+            return out;
+        }
+    }
+
+    // Runway visual range: R11/P6000FT, R28L/0600V1000FT.
+    if let Some(head) = token.strip_suffix("FT") {
+        if let Some(rest) = head.strip_prefix('R') {
+            if let Some((runway, value)) = rest.split_once('/') {
+                let runway_ok = !runway.is_empty()
+                    && runway
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || matches!(b, b'L' | b'C' | b'R'));
+                let mut out = vec!["R", "/"];
+                let value = strip_bound(value, &mut out);
+                let (value_ok, variable) = match value.split_once('V') {
+                    Some((low, high)) => (all_digits(low) && all_digits(high), true),
+                    None => (all_digits(value), false),
+                };
+                if runway_ok && value_ok {
+                    if variable {
+                        out.push("V");
+                    }
+                    out.push("FT");
+                    return out;
+                }
+            }
+        }
+    }
+
+    // Temperature and dew point, in whole degrees Celsius, separated by a solidus and prefixed
+    // with M below zero: 26/07, M02/M04.
+    if let Some((temp, dew)) = token.split_once('/') {
+        fn bare(s: &str) -> &str {
+            s.strip_prefix('M').unwrap_or(s)
+        }
+        if digits(bare(temp), 2) && digits(bare(dew), 2) {
+            let mut out = Vec::new();
+            if temp.starts_with('M') || dew.starts_with('M') {
+                out.push("M");
+            }
+            out.push("/");
+            return out;
+        }
+    }
+
+    // Altimeter: A followed by four digits, inches of mercury.
+    if let Some(rest) = token.strip_prefix('A') {
+        if digits(rest, 4) {
+            return vec!["A"];
+        }
+    }
+
+    // Sea-level pressure in remarks: SLPppp. `SLPNO` is a whole-token entry and is not digits, so
+    // it falls through to the whole-token match with its own, different meaning.
+    if let Some(rest) = token.strip_prefix("SLP") {
+        if digits(rest, 3) {
+            return vec!["SLP"];
+        }
+    }
+
+    // Hourly temperature and dew point in remarks: T followed by eight digits.
+    if let Some(rest) = token.strip_prefix('T') {
+        if digits(rest, 8) {
+            return vec!["T"];
+        }
+    }
+
+    // TAF change groups: FMddhhmm and PROBnn.
+    if let Some(rest) = token.strip_prefix("FM") {
+        if digits(rest, 6) || digits(rest, 4) {
+            return vec!["FM"];
+        }
+    }
+    if let Some(rest) = token.strip_prefix("PROB") {
+        if digits(rest, 2) {
+            return vec!["PROB"];
+        }
+    }
+
+    // Low-level wind shear in a TAF: WS020/27045KT.
+    if let Some(rest) = token.strip_prefix("WS") {
+        if let Some((height, wind)) = rest.split_once('/') {
+            if digits(height, 3) {
+                let mut out = vec!["WS", "/"];
+                out.extend(structured_codes(wind));
+                return out;
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 /// Codes that make up one token, in the order they appear in it.
 ///
 /// A token is not usually a glossary key. `BKN008` is a cover code plus a height; `-TSRA` is an
-/// intensity plus two weather groups. This decomposes the shapes that have structure and falls
-/// back to a whole-token match, so `AO2` and `RMK` resolve too.
+/// intensity plus two weather groups; `27015G35KT` is a gust and a unit wrapped around numbers.
+/// This decomposes the shapes that have structure and falls back to a whole-token match, so `AUTO`
+/// and `AO2` resolve too.
 ///
 /// Single-letter keys are **not** matched as whole tokens. `M`, `P`, `R`, `S`, `N`, `E`, `V` and
 /// friends are real entries but almost never stand alone in a report, and matching them would
-/// turn any stray letter into a confident definition.
+/// turn any stray letter into a confident definition. They are reachable only through a structured
+/// shape, where the surrounding digits and units say what they are.
 pub fn codes_in(token: &str) -> Vec<&'static str> {
     // Weather groups first: they have the most structure, so a match here is the most certain.
     if let Some((qualifier, groups)) = metar::parse_weather(token) {
@@ -217,6 +434,14 @@ pub fn codes_in(token: &str) -> Vec<&'static str> {
                 return out;
             }
         }
+    }
+
+    // Structured groups from page 4 — wind, time, visibility, RVR, temperature, altimeter and the
+    // remark groups. Before the whole-token match, because `SLP123` must resolve as the sea-level
+    // pressure group rather than falling through unexplained.
+    let structured = structured_codes(token);
+    if !structured.is_empty() {
+        return structured;
     }
 
     // Whole-token match, for the tokens that are simply an abbreviation.
@@ -313,11 +538,78 @@ mod tests {
 
     #[test]
     fn unrecognised_tokens_stay_silent() {
-        // Station identifiers, times, temperatures, altimeter settings and the rest are not
-        // glossary entries. Silence is the correct answer.
-        for token in ["KDEN", "291853Z", "27015KT", "M02/M04", "A2992", "2918/3024", "10SM"] {
+        // Silence is the correct answer for anything with no code to attach a meaning to: a
+        // station identifier is arbitrary, and a TAF validity period is two bare timestamps.
+        for token in ["KDEN", "KBJC", "2918/3024", "3002/3006"] {
             assert!(codes_in(token).is_empty(), "{token} should not resolve");
         }
+    }
+
+    #[test]
+    fn ambiguous_remark_groups_stay_silent() {
+        // The documented deliberate silences. `P0003` is an hourly precipitation amount here, but
+        // `P` on its own in the table means "greater than the highest reportable value" — the
+        // definition that would be printed is the wrong one, so nothing is printed. The all-digit
+        // groups have no letter to key on at all, and matching them would mean matching numbers.
+        for token in ["P0003", "60009", "10066", "21012", "58033", "70015"] {
+            assert!(
+                codes_in(token).is_empty(),
+                "{token} should stay silent rather than be confidently mislabelled"
+            );
+        }
+    }
+
+    #[test]
+    fn wind_groups_yield_the_gust_and_the_unit() {
+        assert_eq!(codes_in("21014KT"), vec!["KT"]);
+        assert_eq!(codes_in("27015G35KT"), vec!["G", "KT"]);
+        assert_eq!(codes_in("VRB05KT"), vec!["VRB", "KT"]);
+        assert_eq!(codes_in("00000KT"), vec!["KT"]);
+        // The variable-direction group that follows a wind group.
+        assert_eq!(codes_in("180V240"), vec!["V"]);
+    }
+
+    #[test]
+    fn visibility_carries_its_bound_but_not_its_fraction_slash() {
+        assert_eq!(codes_in("10SM"), vec!["SM"]);
+        assert_eq!(codes_in("P6SM"), vec!["P", "SM"]);
+        assert_eq!(codes_in("M1/4SM"), vec!["M", "SM"]);
+        // The slash in a fraction is not the `/` of the glossary, which means "visual range
+        // follows, or separates temperature and dew point". A definition that does not fit the
+        // thing it is attached to is worse than none.
+        assert_eq!(codes_in("1/2SM"), vec!["SM"]);
+    }
+
+    #[test]
+    fn the_remaining_body_groups_decompose() {
+        assert_eq!(codes_in("291853Z"), vec!["Z"]);
+        assert_eq!(codes_in("26/07"), vec!["/"]);
+        assert_eq!(codes_in("M02/M04"), vec!["M", "/"]);
+        assert_eq!(codes_in("A2992"), vec!["A"]);
+        assert_eq!(codes_in("R11/P6000FT"), vec!["R", "/", "P", "FT"]);
+        assert_eq!(codes_in("R28L/0600V1000FT"), vec!["R", "/", "V", "FT"]);
+    }
+
+    #[test]
+    fn remark_groups_decompose_without_swallowing_their_own_negations() {
+        assert_eq!(codes_in("SLP123"), vec!["SLP"]);
+        assert_eq!(codes_in("T10171028"), vec!["T"]);
+        // SLPNO starts with SLP but means the opposite of a pressure reading. The digit check is
+        // what keeps the prefix rule off it.
+        assert_eq!(codes_in("SLPNO"), vec!["SLPNO"]);
+        assert_eq!(lookup("SLPNO"), Some("sea-level pressure not available"));
+    }
+
+    #[test]
+    fn taf_change_groups_resolve() {
+        // The forecast vocabulary a TAF is mostly made of, and which the PDF does not carry.
+        assert_eq!(codes_in("TAF"), vec!["TAF"]);
+        assert_eq!(codes_in("FM292100"), vec!["FM"]);
+        assert_eq!(codes_in("TEMPO"), vec!["TEMPO"]);
+        assert_eq!(codes_in("BECMG"), vec!["BECMG"]);
+        assert_eq!(codes_in("PROB30"), vec!["PROB"]);
+        assert_eq!(codes_in("NSW"), vec!["NSW"]);
+        assert_eq!(codes_in("WS020/27045KT"), vec!["WS", "/", "KT"]);
     }
 
     #[test]
@@ -328,8 +620,28 @@ mod tests {
         // Order follows the report, so the reader's eye and the list agree.
         assert_eq!(
             codes,
-            vec!["METAR", "TS", "RA", "BKN", "OVC", "CB", "AO2", "TSNO"]
+            vec![
+                "METAR", "Z", "KT", "SM", "TS", "RA", "BKN", "OVC", "CB", "M", "/", "A", "RMK",
+                "AO2", "TSNO"
+            ]
         );
+    }
+
+    #[test]
+    fn an_ordinary_metar_explains_every_token_but_its_station() {
+        // The regression this module was rewritten for: this report used to yield two entries,
+        // because every structured group in it fell through to nothing.
+        let body = "METAR KBJC 291853Z 21014KT 10SM FEW120 26/07 A3002";
+        let unexplained: Vec<&str> = body
+            .split_whitespace()
+            .filter(|t| codes_in(t).is_empty())
+            .collect();
+        assert_eq!(
+            unexplained,
+            vec!["KBJC"],
+            "only the station identifier should be left unexplained"
+        );
+        assert!(explain(body).len() >= 7, "{:?}", explain(body));
     }
 
     #[test]
@@ -340,7 +652,8 @@ mod tests {
 
     #[test]
     fn a_report_with_nothing_to_explain_yields_nothing() {
-        assert!(explain("KDEN 291853Z 27015KT").is_empty());
+        // Station identifiers and validity periods only — nothing here carries a code.
+        assert!(explain("KDEN KBJC 2918/3024").is_empty());
         assert!(explain("").is_empty());
     }
 }
