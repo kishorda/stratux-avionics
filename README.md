@@ -321,6 +321,42 @@ Changing settings later means `overlay.sh disable`, change, re-enable — a deli
 infrequent, on-the-ground operation. The manual procedure for a real persistent partition is
 documented at the end of `overlay.sh` for when it is genuinely needed.
 
+## Verify locally before deploying to the Pi
+
+**Exhaust local verification first. The Pi is for confirming a fix, not for finding one.**
+
+Every hardware round-trip costs someone's attention — flashing a binary, watching a panel,
+pressing a key on request. A local run costs seconds. This is a house rule because ignoring it
+already cost real time: a bug where *every touch resolved to the top of the screen* was chased
+through repeated deploys, a corner-touching exercise, and at one point a request to aim at a
+panel that had just been blanked. It was reproducible offline the moment raw evdev events had
+been captured, and now has eight tests that never need hardware again.
+
+What is available without a Pi:
+
+```sh
+cargo test --workspace                        # logic, decoders, gesture state machine
+cargo clippy --workspace --all-targets
+
+# Render real frames and LOOK at them — no panel required.
+cargo run -p replay -- synth /tmp/s.jsonl --duration 120 --targets 12 --conflict
+cargo run --release -p avionics -- --replay /tmp/s.jsonl --offscreen --out /tmp/frames
+cargo run --release -p avionics -- --replay /tmp/s.jsonl --offscreen --ahrs-page --out /tmp/f2
+
+# Interactive, mouse instead of touch, same interaction code as the panel.
+cargo run --release --features desktop -p avionics -- --window --replay /tmp/s.jsonl --speed 4
+```
+
+Two rules that came out of the same incident:
+
+* **When something can only be observed on hardware, capture the raw data once and move the
+  analysis offline.** An evdev event log, a `getSituation` dump, a recorded session — any of
+  these turns a hardware problem into a desk problem. `TouchState::apply` exists precisely so
+  captured touch events replay with no device attached.
+* **Check that a regression test fails without the fix.** Four of the eight touch tests do; the
+  other four pass either way and prove nothing on their own. A test written after the fact that
+  was never seen to fail is not evidence.
+
 ## Running the display
 
 ```sh
