@@ -206,7 +206,16 @@ fn draw_rings(
         reserved.push(padded_rect(lx, ly, width, theme.font_size_small));
     }
 
-    // Compass ticks every 30 degrees, longer on the cardinals.
+    // Compass rose: ticks every 30 degrees, longer on the cardinals, each one labelled.
+    //
+    // Labelling every 30 degrees rather than only north is what makes this a compass rather than
+    // a ring with an arrow on it. In track-up especially, "the target is off to the left" is much
+    // less useful than "the target is to the south-west", and reading that off an unlabelled ring
+    // means counting ticks.
+    //
+    // Cardinals get letters and the rest get tens of degrees — N, 3, 6, E, 12, 15, S ... — which
+    // is the convention on every heading indicator, and keeps each label to one or two glyphs.
+    // Spelling out "030" would triple the ink for no extra information.
     for degrees in (0..360).step_by(30) {
         let angle = match projection {
             Some(p) => p.screen_angle_rad(degrees as f32),
@@ -226,21 +235,36 @@ fn draw_rings(
             &Paint::color(theme.compass_tick)
                 .with_line_width(if cardinal { theme.line_width } else { 1.0 }),
         );
-    }
 
-    // A north pointer. Essential in track-up, where the pilot otherwise has no reference for
-    // which way north is; harmless in north-up, where it sits at the top.
-    if let Some(angle) = north_angle {
-        let radius = layout.outer_radius + theme.font_size_small * 0.85;
-        let mut north = Paint::color(theme.ring_label);
-        north.set_font(&[ui.font()]);
-        north.set_font_size(theme.font_size_small);
-        north.set_text_align(Align::Center);
-        north.set_text_baseline(Baseline::Middle);
-        let nx = cx + angle.sin() * radius;
-        let ny = cy - angle.cos() * radius;
-        let _ = canvas.fill_text(nx, ny, "N", &north);
-        reserved.push(padded_rect(nx, ny, theme.font_size_small, theme.font_size_small));
+        // North is the reference the pilot orients from, so it stays brighter and larger than the
+        // rest; the others are a scale, and a scale that shouts competes with the traffic.
+        let is_north = degrees == 0;
+        let size = if cardinal {
+            theme.font_size_small
+        } else {
+            theme.font_size_tag
+        };
+        let colour = if is_north {
+            theme.ring_label
+        } else if cardinal {
+            theme.text_secondary
+        } else {
+            theme.compass_tick
+        };
+
+        let mut label = Paint::color(colour);
+        label.set_font(&[ui.font()]);
+        label.set_font_size(size);
+        label.set_text_align(Align::Center);
+        label.set_text_baseline(Baseline::Middle);
+
+        let radius = layout.outer_radius + size * 0.85;
+        let lx = cx + sin * radius;
+        let ly = cy - cos * radius;
+        let text = compass_label(degrees as u16);
+        let _ = canvas.fill_text(lx, ly, text, &label);
+        // Reserved so traffic tags route around the rose instead of overprinting it.
+        reserved.push(padded_rect(lx, ly, size * text.len() as f32 * 0.62, size));
     }
 
     reserved
@@ -259,7 +283,7 @@ pub(crate) fn angular_distance(a: f32, b: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::angular_distance;
+    use super::{angular_distance, compass_label};
     use std::f32::consts::{PI, TAU};
 
     #[test]
@@ -268,6 +292,30 @@ mod tests {
         // furthest from the north pointer" search into picking the nearest one.
         assert!(angular_distance(1.0, 1.0).abs() < 1e-6);
         assert!(angular_distance(-0.75, -0.75 + TAU).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_compass_rose_labels_every_thirty_degrees() {
+        // Letters on the cardinals, tens of degrees elsewhere — the heading-indicator convention.
+        let expected = [
+            (0, "N"), (30, "3"), (60, "6"), (90, "E"),
+            (120, "12"), (150, "15"), (180, "S"), (210, "21"),
+            (240, "24"), (270, "W"), (300, "30"), (330, "33"),
+        ];
+        for (deg, want) in expected {
+            assert_eq!(compass_label(deg), want, "{deg} degrees");
+        }
+        // Every position the rose actually draws must have a label; a blank would leave a tick
+        // with nothing against it, which reads as a rendering fault.
+        for deg in (0..360).step_by(30) {
+            assert!(!compass_label(deg).is_empty(), "{deg} degrees has no label");
+        }
+    }
+
+    #[test]
+    fn compass_labels_wrap_rather_than_going_blank() {
+        assert_eq!(compass_label(360), "N");
+        assert_eq!(compass_label(450), "E");
     }
 
     #[test]
@@ -655,5 +703,25 @@ pub fn format_range(range_nm: f32) -> String {
         format!("{:.0}", range_nm.round())
     } else {
         format!("{range_nm:.1}")
+    }
+}
+
+/// Compass rose label for a bearing, in the convention every heading indicator uses: letters on
+/// the cardinals, tens of degrees elsewhere.
+pub(crate) fn compass_label(degrees: u16) -> &'static str {
+    match degrees % 360 {
+        0 => "N",
+        30 => "3",
+        60 => "6",
+        90 => "E",
+        120 => "12",
+        150 => "15",
+        180 => "S",
+        210 => "21",
+        240 => "24",
+        270 => "W",
+        300 => "30",
+        330 => "33",
+        _ => "",
     }
 }
