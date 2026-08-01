@@ -28,6 +28,7 @@ pub mod reckon;
 pub mod softkeys;
 pub mod statusbar;
 pub mod symbols;
+pub mod tapes;
 pub mod theme;
 pub mod threat;
 pub mod weatherpage;

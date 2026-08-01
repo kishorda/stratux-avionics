@@ -31,7 +31,7 @@
 
 use std::time::{Duration, Instant};
 
-use avionics_gfx::femtovg::{Align, Baseline, Paint, Path, Solidity};
+use avionics_gfx::femtovg::{Align, Baseline, Color, Paint, Path};
 use avionics_gfx::Canvas;
 use stratux_client::AppState;
 
@@ -92,6 +92,11 @@ pub fn classify(state: &AppState, now: Instant) -> AhrsRender {
     }
 }
 
+/// Widths of the three tapes, in pixels on the 800-wide target.
+const GS_TAPE_W: f32 = 62.0;
+const ALT_TAPE_W: f32 = 70.0;
+const VSI_W: f32 = 34.0;
+
 pub fn draw(
     ui: &Ui,
     canvas: &mut Canvas,
@@ -101,12 +106,23 @@ pub fn draw(
 ) -> AhrsRender {
     let decision = classify(state, now);
 
-    // Instrument area: between the status bar and the footer, left of the soft keys.
     let top = layout.status_bar_height;
     let bottom = layout.height - layout.footer_height;
+
+    // The attitude fills the whole area and the tapes overlay it translucently, rather than the
+    // attitude being a round gauge boxed in beside them. On an 800x480 panel that is the
+    // difference between a horizon you can read at a glance and three instruments competing for
+    // a strip each — and it matches how every glass panel lays this out.
+    // The horizon runs the full width and the tapes sit translucently on top of it, exactly as
+    // on the reference panel. Stopping it at the tape edge instead makes the tapes read as walls
+    // boxing in a small picture, and wastes the widest part of an already small screen.
+    let horizon_left = 0.0;
+    let horizon_right = layout.content_width;
     let cx = layout.content_width * 0.5;
-    let cy = (top + bottom) * 0.5;
-    let radius = ((bottom - top) * 0.5).min(layout.content_width * 0.5) - layout.margin;
+    // Leave a band at the bottom for the heading readout.
+    let heading_band = ui.theme.font_size_large * 1.7;
+    let cy = (top + bottom - heading_band) * 0.5;
+    let half_h = (bottom - heading_band - top) * 0.5;
 
     match decision {
         AhrsRender::Attitude => {
@@ -115,48 +131,162 @@ pub fn draw(
                 .ahrs
                 .attitude()
                 .expect("classify returned Attitude");
-            draw_horizon(ui, canvas, cx, cy, radius, pitch as f32, roll as f32);
-            draw_roll_scale(ui, canvas, cx, cy, radius, roll as f32);
-            draw_aircraft_symbol(ui, canvas, cx, cy, radius);
+            draw_horizon(
+                ui, canvas, cx, cy, half_h, horizon_left, horizon_right, top,
+                bottom - heading_band, pitch as f32, roll as f32,
+            );
+            draw_roll_scale(ui, canvas, cx, cy, half_h, roll as f32);
+            draw_aircraft_symbol(ui, canvas, cx, cy, half_h);
+            draw_slip_skid(ui, canvas, state, cx, cy, half_h);
         }
-        AhrsRender::Failed(failure) => draw_failure(ui, canvas, cx, cy, radius, failure),
+        AhrsRender::Failed(failure) => {
+            draw_failure(ui, canvas, cx, cy, half_h.min(horizon_right - cx), failure)
+        }
     }
 
-    draw_slip_skid(ui, canvas, state, cx, cy, radius);
-    draw_side_readouts(ui, canvas, state, layout, cx, cy, radius);
-    draw_readouts(ui, canvas, state, layout, top);
-    draw_banner(ui, canvas, layout, bottom);
+    // The tapes are driven by GPS and the pressure sensor, NOT by the AHRS, so they keep working
+    // when the attitude fails. Blanking them alongside the horizon would throw away good data
+    // because a different sensor died.
+    draw_tapes(ui, canvas, state, layout, top, bottom);
+    draw_g_load(ui, canvas, state, GS_TAPE_W + 8.0, top);
+    draw_heading(ui, canvas, state, cx, bottom - heading_band, bottom);
+    draw_banner(ui, canvas, GS_TAPE_W + 8.0, bottom - heading_band - 5.0);
 
     decision
 }
 
-/// Blue-over-brown, translated for pitch and rotated for roll, clipped to the instrument circle.
+fn draw_tapes(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    state: &AppState,
+    layout: &Layout,
+    top: f32,
+    bottom: f32,
+) {
+    use crate::tapes::{self, Side, Tape, Vsi};
+
+    // Ground speed. 0.25 kt per pixel puts about 100 kt across the tape, so circuit speeds and
+    // cruise both show useful movement.
+    tapes::draw(
+        ui,
+        canvas,
+        &Tape {
+            x: 0.0,
+            width: GS_TAPE_W,
+            top,
+            bottom,
+            units_per_px: 0.25,
+            major: 10.0,
+            minor: 5.0,
+            side: Side::Left,
+            label: "GS KT",
+        },
+        state.ownship.ground_speed_kt,
+        |v| format!("{v:.0}"),
+    );
+
+    // Altitude, captioned by its source. 2.5 ft per pixel gives roughly 1000 ft across the tape.
+    let (label, value) = match altitude_source(state) {
+        AltSource::Baro(ft) => ("BARO FT", Some(ft as f64)),
+        AltSource::Gps(ft) => ("GPS FT", Some(ft as f64)),
+        AltSource::None => ("ALT FT", None),
+    };
+    tapes::draw(
+        ui,
+        canvas,
+        &Tape {
+            x: layout.content_width - ALT_TAPE_W - VSI_W,
+            width: ALT_TAPE_W,
+            top,
+            bottom,
+            units_per_px: 2.5,
+            major: 100.0,
+            minor: 20.0,
+            side: Side::Right,
+            label,
+        },
+        value,
+        |v| format!("{v:.0}"),
+    );
+
+    tapes::draw_vsi(
+        ui,
+        canvas,
+        &Vsi {
+            x: layout.content_width - VSI_W,
+            width: VSI_W,
+            top,
+            bottom,
+            full_scale: 2000.0,
+        },
+        state.ownship.vertical_speed_fpm.map(|v| v as f64),
+    );
+}
+
+/// Heading or track, in a box under the attitude — the position it occupies on a real panel.
+fn draw_heading(ui: &Ui, canvas: &mut Canvas, state: &AppState, cx: f32, top: f32, bottom: f32) {
+    let theme = &ui.theme;
+    let source = heading_source(state);
+    let cy = (top + bottom) * 0.5;
+
+    let w = theme.font_size_large * 5.0;
+    let h = theme.font_size_large * 1.5;
+    let mut boxed = Path::new();
+    boxed.rect(cx - w * 0.5, cy - h * 0.5, w, h);
+    canvas.fill_path(&boxed, &Paint::color(Color::rgba(0, 0, 0, 235)));
+    canvas.stroke_path(&boxed, &Paint::color(theme.text_primary).with_line_width(1.4));
+
+    let mut value = Paint::color(theme.text_primary);
+    value.set_font(&[ui.font()]);
+    value.set_font_size(theme.font_size_large);
+    value.set_text_align(Align::Center);
+    value.set_text_baseline(Baseline::Middle);
+    let _ = canvas.fill_text(cx, cy, source.text(), &value);
+
+    // The caption is what stops GPS track being read as heading. See `HeadingSource`.
+    let mut caption = Paint::color(theme.text_dim);
+    caption.set_font(&[ui.font()]);
+    caption.set_font_size(theme.font_size_tag);
+    caption.set_text_align(Align::Center);
+    caption.set_text_baseline(Baseline::Middle);
+    caption.set_text_baseline(Baseline::Top);
+    let _ = canvas.fill_text(cx, cy + h * 0.5 + 1.0, source.caption(), &caption);
+}
+
+/// Blue-over-brown filling the attitude area, translated for pitch and rotated for roll.
+///
+/// Full-bleed rather than a round gauge: the horizon is the primary picture on this page and the
+/// tapes overlay it. That also removes the circular mask the round version needed, and with it
+/// the antialiased seam that mask used to leave around the instrument.
+#[allow(clippy::too_many_arguments)]
 fn draw_horizon(
     ui: &Ui,
     canvas: &mut Canvas,
     cx: f32,
     cy: f32,
-    radius: f32,
+    half_h: f32,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
     pitch_deg: f32,
     roll_deg: f32,
 ) {
     let theme = &ui.theme;
-    let px_per_deg = radius / PITCH_RANGE_DEG;
+    let px_per_deg = half_h / PITCH_RANGE_DEG;
 
-    // Confine the oversized horizon rectangles to the instrument's bounding box first, then mask
-    // the corners off below. femtovg's scissor is rectangular, so a round gauge needs both steps;
-    // without the mask the horizon bleeds into the corners and reads as the whole screen tilting.
     canvas.save();
-    canvas.scissor(cx - radius, cy - radius, radius * 2.0, radius * 2.0);
+    canvas.scissor(left, top, right - left, bottom - top);
 
     canvas.translate(cx, cy);
-    // Screen-opposite: right bank (positive roll) rotates the horizon counter-clockwise.
+    // Screen-opposite: right bank (positive roll) rotates the horizon counter-clockwise, putting
+    // more ground on the right. Verified by tilting the panel — see the module docs.
     canvas.rotate(-roll_deg.to_radians());
     // Nose-up (positive pitch) pushes the horizon down the screen.
     canvas.translate(0.0, pitch_deg * px_per_deg);
 
-    // Oversized so the rotated rectangle still covers the circle at any bank angle.
-    let span = radius * 3.0;
+    // Oversized so the rotated rectangles still cover the area at any bank angle.
+    let span = (right - left).max(bottom - top) * 2.0;
 
     let mut sky = Path::new();
     sky.rect(-span, -span, span * 2.0, span);
@@ -174,30 +304,13 @@ fn draw_horizon(
         &Paint::color(theme.text_primary).with_line_width(2.0),
     );
 
-    draw_pitch_ladder(ui, canvas, radius, px_per_deg);
+    draw_pitch_ladder(ui, canvas, half_h, px_per_deg);
 
     canvas.restore();
-
-    // Mask the square corners back to background: a rectangle with the instrument circle punched
-    // out of it, so only the disc survives.
-    // The rect runs well off-screen on purpose: its own antialiased edge would otherwise show as
-    // a faint box around the instrument, since it is drawn in the same colour as the background it
-    // sits on. Everything drawn after this (roll scale, symbol, readouts, status bar, soft keys)
-    // paints over the top, so an oversized mask costs nothing.
-    let mut mask = Path::new();
-    mask.rect(cx - radius * 8.0, cy - radius * 8.0, radius * 16.0, radius * 16.0);
-    mask.circle(cx, cy, radius);
-    mask.solidity(Solidity::Hole);
-    canvas.fill_path(&mask, &Paint::color(theme.background));
-
-    // Ring around the instrument, drawn after so it covers the horizon's edge.
-    let mut ring = Path::new();
-    ring.circle(cx, cy, radius);
-    canvas.stroke_path(&ring, &Paint::color(theme.text_dim).with_line_width(1.5));
 }
 
 /// Pitch reference lines every 5 degrees, longer every 10.
-fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, radius: f32, px_per_deg: f32) {
+fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, half_h: f32, px_per_deg: f32) {
     let theme = &ui.theme;
     let mut paint = Paint::color(theme.text_primary);
     paint.set_font(&[ui.font()]);
@@ -208,13 +321,13 @@ fn draw_pitch_ladder(ui: &Ui, canvas: &mut Canvas, radius: f32, px_per_deg: f32)
     for step in 1..=((PITCH_RANGE_DEG / 5.0) as i32 + 1) {
         let deg = step * 5;
         let major = deg % 10 == 0;
-        let half = if major { radius * 0.28 } else { radius * 0.14 };
+        let half = if major { half_h * 0.30 } else { half_h * 0.15 };
 
         for sign in [-1.0f32, 1.0] {
             // Negated: a positive pitch reference sits ABOVE the horizon on screen, and screen y
             // grows downward.
             let y = -sign * deg as f32 * px_per_deg;
-            if y.abs() > radius * 1.6 {
+            if y.abs() > half_h * 1.6 {
                 continue;
             }
 
@@ -449,182 +562,49 @@ fn altitude_source(state: &AppState) -> AltSource {
     }
 }
 
-/// Ground speed on the left, altitude on the right — speed-left/altitude-right is the layout
-/// every glass panel uses, so it costs nothing to learn and is where the eye already goes.
+/// G-load, top-left of the attitude area.
 ///
-/// Both are placed outside the instrument circle rather than over it: an attitude indicator with
-/// numbers painted across the horizon is harder to read at a glance in turbulence, and the whole
-/// point of the round gauge is that its picture reads pre-attentively.
-fn draw_side_readouts(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    state: &AppState,
-    layout: &Layout,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-) {
+/// Pitch and roll are deliberately not printed: the horizon exists to show them, and a number
+/// beside a picture of the same thing is duplication that costs a glance. G-load has no other
+/// representation on the page, so it gets one.
+fn draw_g_load(ui: &Ui, canvas: &mut Canvas, state: &AppState, x: f32, top: f32) {
     let theme = &ui.theme;
-
-    let mut caption = Paint::color(theme.text_dim);
-    caption.set_font(&[ui.font()]);
-    caption.set_font_size(theme.font_size_tag);
-    caption.set_text_baseline(Baseline::Bottom);
-
-    let mut value = Paint::color(theme.text_primary);
-    value.set_font(&[ui.font()]);
-    value.set_font_size(theme.font_size_large);
-    value.set_text_baseline(Baseline::Top);
-
-    // Two per side, stacked either side of the instrument's vertical centre. Speed and track go
-    // left, altitude and vertical speed right, keeping each pair with the quantity it belongs to.
-    // Wide enough apart that the lower caption does not crowd the upper value: at this size the
-    // two nearly touch at 0.9, and a caption read as part of the number above it is worse than
-    // wasted space.
-    let upper = cy - theme.font_size_large * 1.25;
-    let lower = cy + theme.font_size_large * 1.25;
-
-    let mut cell = |canvas: &mut Canvas,
-                    x: f32,
-                    y: f32,
-                    align: Align,
-                    cap: &str,
-                    text: &str| {
-        caption.set_text_align(align);
-        value.set_text_align(align);
-        let _ = canvas.fill_text(x, y - 4.0, cap, &caption);
-        let _ = canvas.fill_text(x, y, text, &value);
-    };
-
-    let left = layout.margin;
-    let right = layout.content_width - layout.margin;
-
-    // Ground speed. GPS-derived, so it is present whenever there is a fix and absent otherwise —
-    // never a zero standing in for "unknown".
-    let gs = state
-        .ownship
-        .ground_speed_kt
-        .map(|v| format!("{v:.0}"))
-        .unwrap_or_else(|| "---".into());
-    cell(canvas, left, upper, Align::Left, "GS kt", &gs);
-
-    // Direction, captioned with what it actually is. See `HeadingSource`: on this hardware the
-    // AHRS heading fields are unavailable, so this is normally GPS ground track.
-    let heading = heading_source(state);
-    cell(
-        canvas,
-        left,
-        lower,
-        Align::Left,
-        heading.caption(),
-        &heading.text(),
-    );
-
-    // Altitude, captioned with the sensor it came from.
-    let (cap, text) = match altitude_source(state) {
-        AltSource::Baro(ft) => ("BARO ft", format!("{ft:.0}")),
-        AltSource::Gps(ft) => ("GPS ft", format!("{ft:.0}")),
-        AltSource::None => ("ALT ft", "---".to_string()),
-    };
-    cell(canvas, right, upper, Align::Right, cap, &text);
-
-    // Vertical speed. Unlike altitude this needs no source caption: baro and GPS vertical speed
-    // measure the same quantity and differ in smoothness, not in meaning, whereas pressure
-    // altitude and GPS MSL differ by the altimeter setting. The decoder already prefers baro.
-    //
-    // Signed always, including the plus: an unsigned "300" next to an altitude is ambiguous at a
-    // glance, and which way you are going is the entire point of the number.
-    let vs = state
-        .ownship
-        .vertical_speed_fpm
-        .map(|v| {
-            // Round to 50 fpm. The raw figure jitters by tens of feet per minute on a MEMS
-            // sensor, and a readout whose last digit never settles is one you stop trusting.
-            let rounded = (v / 50.0).round() * 50.0;
-            format!("{:+.0}", rounded)
-        })
-        .unwrap_or_else(|| "---".into());
-    cell(canvas, right, lower, Align::Right, "VS fpm", &vs);
-
-    // Keep the numbers clear of the instrument: if the panel is ever narrow enough that they
-    // would collide with the circle, the circle is what shrinks, not the readouts.
-    debug_assert!(
-        cx - radius >= left,
-        "instrument overlaps the ground-speed readout"
-    );
-}
-
-/// Numeric readouts along the top of the instrument area.
-fn draw_readouts(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout, top: f32) {
-    let theme = &ui.theme;
-    let ahrs = &state.ownship.ahrs;
+    let y = top + theme.font_size_small * 1.2;
 
     let mut label = Paint::color(theme.text_dim);
     label.set_font(&[ui.font()]);
     label.set_font_size(theme.font_size_tag);
     label.set_text_baseline(Baseline::Middle);
+    label.set_text_align(Align::Left);
+    let _ = canvas.fill_text(x, y, "G", &label);
 
     let mut value = Paint::color(theme.text_primary);
     value.set_font(&[ui.font()]);
     value.set_font_size(theme.font_size_small);
     value.set_text_baseline(Baseline::Middle);
-
-    let y = top + theme.font_size_small * 1.1;
-    let mut x = layout.margin;
-
-    // Absent readings print as dashes. Never a zero: a zero is a measurement.
-    let field = |canvas: &mut Canvas, x: &mut f32, name: &str, text: String| {
-        let _ = canvas.fill_text(*x, y, name, &label);
-        let width = canvas
-            .measure_text(0.0, 0.0, name, &label)
-            .map(|m| m.width())
-            .unwrap_or(0.0);
-        let _ = canvas.fill_text(*x + width + 5.0, y, &text, &value);
-        let vw = canvas
-            .measure_text(0.0, 0.0, &text, &value)
-            .map(|m| m.width())
-            .unwrap_or(0.0);
-        *x += width + vw + 22.0;
-    };
-
-    field(
-        canvas,
-        &mut x,
-        "PITCH",
-        fmt_deg(ahrs.pitch_deg),
-    );
-    field(canvas, &mut x, "ROLL", fmt_deg(ahrs.roll_deg));
-    field(
-        canvas,
-        &mut x,
-        "G",
-        ahrs.g_load
-            .map(|g| format!("{g:.2}"))
-            .unwrap_or_else(|| "---".into()),
-    );
-}
-
-fn fmt_deg(v: Option<f64>) -> String {
-    match v {
-        Some(v) => format!("{v:+.1}\u{00B0}"),
-        None => "---".into(),
-    }
+    value.set_text_align(Align::Left);
+    let text = state
+        .ownship
+        .ahrs
+        .g_load
+        .map(|g| format!("{g:.2}"))
+        .unwrap_or_else(|| "---".into());
+    let _ = canvas.fill_text(x + 12.0, y, &text, &value);
 }
 
 /// The standing reminder that this is not a primary instrument.
-fn draw_banner(ui: &Ui, canvas: &mut Canvas, layout: &Layout, bottom: f32) {
+///
+/// Bottom-left of the attitude area: clear of the roll pointer at the top, which it overprinted,
+/// and clear of the heading box at the bottom centre, which it also overprinted. Left-aligned
+/// rather than centred so it cannot collide with either as the layout changes.
+fn draw_banner(ui: &Ui, canvas: &mut Canvas, x: f32, y: f32) {
     let theme = &ui.theme;
     let mut paint = Paint::color(theme.caution);
     paint.set_font(&[ui.font()]);
     paint.set_font_size(theme.font_size_tag);
-    paint.set_text_align(Align::Center);
+    paint.set_text_align(Align::Left);
     paint.set_text_baseline(Baseline::Bottom);
-    let _ = canvas.fill_text(
-        layout.content_width * 0.5,
-        bottom - 3.0,
-        "AHRS \u{2014} NOT FOR PRIMARY REFERENCE",
-        &paint,
-    );
+    let _ = canvas.fill_text(x, y, "AHRS \u{2014} NOT FOR PRIMARY REFERENCE", &paint);
 }
 
 #[cfg(test)]
@@ -736,11 +716,6 @@ mod tests {
         assert_eq!(classify(&state, now), AhrsRender::Attitude);
     }
 
-    #[test]
-    fn absent_readouts_print_dashes_never_zero() {
-        assert_eq!(fmt_deg(None), "---");
-        assert_eq!(fmt_deg(Some(0.0)), "+0.0\u{00B0}");
-    }
 }
 
 #[cfg(test)]
