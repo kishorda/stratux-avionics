@@ -252,11 +252,36 @@ SIZE="$(du -h "$RECORDING" 2>/dev/null | cut -f1 || echo '?')"
     echo "  Pi, check that vcgencmd exists and that the user running the capture is in the video"
     echo "  group (the capture service runs as root, which is why it normally works)."
   elif [[ -n "$WORST" ]]; then
-    echo "throttled : $WORST  <-- NOT A CLEAN RUN"
-    echo
-    echo "  The board throttled during this capture, so any timing taken from it is not"
-    echo "  comparable with a healthy board. The data itself is still fine to replay; the"
-    echo "  performance numbers are not. Check the supply and capture again."
+    # The high bits of this word are sticky since boot, so a brief dip during start-up — the
+    # inrush as the SDRs and GPS enumerate is enough — leaves them set for the whole session.
+    # Condemning half an hour of good data because of six seconds that happened before the
+    # capture even began would teach you to ignore this line, which is the opposite of the point.
+    # So distinguish what was already true when we started from what happened on our watch.
+    FIRST="$(awk -F, 'NR>1 && $2 ~ /^0x/ {print $2; exit}' "$HEALTH")"
+    CHANGED="$(awk -F, -v f="$FIRST" 'NR>1 && $2 ~ /^0x/ && $2 != f' "$HEALTH" | wc -l)"
+    LIVE=0
+    while read -r v; do
+      [[ -n "$v" ]] || continue
+      (( (v & 0xF) != 0 )) && LIVE=1
+    done < <(awk -F, 'NR>1 && $2 ~ /^0x/ {print $2}' "$HEALTH" | sort -u)
+
+    if (( LIVE )); then
+      echo "throttled : $WORST  <-- ACTIVELY THROTTLED DURING THIS CAPTURE"
+      echo "  The board was throttling while recording. Timings from this run are not"
+      echo "  comparable with a healthy board. Fix the supply and capture again."
+    elif [[ "$CHANGED" -gt 0 ]]; then
+      echo "throttled : $WORST  <-- UNDER-VOLTAGE OCCURRED DURING THIS CAPTURE"
+      echo "  The sticky bits changed while recording, so the dip happened on our watch."
+      echo "  Treat any timing from this run with suspicion."
+    else
+      echo "throttled : $WORST  (sticky, already set before recording began)"
+      echo "  These bits were already set at the first sample and never changed, so the dip"
+      echo "  happened during boot — most likely the inrush as the SDRs and GPS enumerate —"
+      echo "  and not during this capture. Check dmesg for the exact window:"
+      echo "      dmesg | grep -i voltage"
+      echo "  The recording and its timings are usable. Worth fixing at the supply even so:"
+      echo "  a board that dips at boot is one bad cable away from dipping in flight."
+    fi
     echo "    bit 0  under-voltage now        bit 16  under-voltage has occurred"
     echo "    bit 1  arm frequency capped     bit 17  arm capping has occurred"
     echo "    bit 2  currently throttled      bit 18  throttling has occurred"

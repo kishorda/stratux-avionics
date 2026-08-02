@@ -15,16 +15,16 @@ and how to run it.
 
 | Milestone | What | State |
 | --- | --- | --- |
-| M0 | Hardware & OS bring-up survey | **nearly done** — both SDRs, GPS and panel attached and detected; supply fixed 2026-08-01; GPS still needs a sky view for a fix |
+| M0 | Hardware & OS bring-up survey | **done** — both SDRs, GPS and panel detected; **GPS 3D fix achieved outdoors 2026-08-02** (18 satellites seen, 13 locked) |
 | M1 | Rendering spike — go/no-go on the stack | **PASSED on hardware** — see [M0/M1 results](#m0--m1-results-on-hardware) |
 | M2 | Presenter abstraction + interactive dev harness | **done** — offscreen + interactive window |
 | M3 | Stratux client + replay harness | **live data flowing** — all five sockets connect, 1090 MHz decoding; not yet diffed against Stratux's web UI |
-| M4 | Traffic plan view | **renders on the panel, touch confirmed**; frame cost measured on a healthy board, but not yet with both radios decoding |
-| M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; still unvalidated against an independent mosaic |
+| M4 | Traffic plan view | **proven on live data** — real own-ship and real ADS-B traffic plotted from a 30 min outdoor capture; frame cost measured, but not yet with both radios busy |
+| M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-199 tests passing, clippy clean.
+203 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -202,6 +202,55 @@ or long-run drift. Settling it needs a long live run on the fixed supply.
 underclocks from Stratux issue #573 that reduce EMI. **Do not raise them**: on this box they
 protect SDR and GPS reception. `core_freq=450` caps GPU throughput, and it was expected to
 cost frames at 800x480. It does not.
+
+### First outdoor capture — 2026-08-02
+
+Thirty minutes on a battery, recorded unattended by `deploy/capture.sh`, at Morristown NJ.
+**This is the first real-world data the project has.**
+
+```
+own-ship      : 40.7784, -74.3343 (3D)     <- the M0 GPS exit criterion
+frames        : 69572 over 1799.9 s, 0 decode errors
+gps           : peak 18 satellites seen, 13 locked
+first 3D fix  : t = 828 s   (13.8 minutes)
+radios        : 115 ES (1090) messages, 0 UAT (978)
+access point  : up for 141 of 141 samples
+throttled     : 0x50000 (sticky, set during boot — see below)
+```
+
+The plan view was rendered from this recording and plotted a real target — `RPA3412 +107 up`,
+Republic Airways, 10,700 ft above and climbing — against a real own-ship. That is M4's core
+function working on live data rather than synthesis.
+
+**Time to first fix was 13.8 minutes**, which is what a genuine u-blox cold start with no
+almanac costs. It explains the previous attempt completely: that one ran 6.4 minutes and was
+always going to end before the almanac finished downloading, whatever the antenna was doing.
+Two compounding causes, and only one of them was the obvious one.
+
+**Zero UAT is not a fault.** FIS-B ground stations are line-of-sight and aimed at aircraft; on
+the ground you often hear nothing. Weather needs altitude, so M5 stays unvalidated until this
+flies.
+
+### The under-voltage is now a boot transient, not a state
+
+```
+[27.013214] hwmon hwmon1: Undervoltage detected!
+[33.060377] hwmon hwmon1: Voltage normalised
+```
+
+Six seconds during start-up — the inrush as the SDRs and GPS enumerate — then normal for the
+remaining half hour at a full 900 MHz. This is a different thing from the sustained brown-out
+that used to pin the board at 600 MHz, and it does **not** invalidate timings taken after boot.
+
+The bits are sticky since boot, so a capture will keep reporting them all session. `capture.sh`
+therefore distinguishes three cases rather than condemning everything: bits already set at the
+first sample (boot transient, data usable), bits that changed mid-run (the dip happened while
+recording), and any live bit in the low nibble (actively throttling). Without that split, half
+an hour of good data gets marked untrustworthy because of six seconds that happened before the
+capture started — and a warning that cries wolf is one you learn to ignore.
+
+Worth fixing at the supply even so: a board that dips at boot is one bad cable away from
+dipping in flight.
 
 ### M0 survey
 
