@@ -39,6 +39,46 @@ if [[ ! -x "$REPLAY" ]]; then
   exit 1
 fi
 
+# --- will the recording survive the walk back inside? -----------------------------------------
+#
+# The Stratux image boots through /sbin/init-overlay, which puts the root filesystem behind a RAM
+# overlay unless /overlay/disable exists. That is good for surviving power cuts and fatal for this
+# script: a capture written into the overlay looks entirely normal — right size, right frame count,
+# readable — until the Pi is powered off, at which point it never existed.
+#
+# The state that matters is the state at capture time, not at install time, because the timer fires
+# after a boot and the flag can be toggled from the Stratux web UI in between.
+persistence() {
+  local fstype
+  fstype="$(findmnt -no FSTYPE / 2>/dev/null || echo unknown)"
+  if [[ "$fstype" == overlay ]]; then
+    echo VOLATILE
+  elif grep -q 'init=/sbin/init-overlay' /proc/cmdline 2>/dev/null && [[ ! -e /overlay/disable ]]; then
+    echo VOLATILE_NEXT_BOOT
+  else
+    echo PERSISTENT
+  fi
+}
+
+PERSISTENCE="$(persistence)"
+if [[ "$PERSISTENCE" == VOLATILE && "${CAPTURE_ALLOW_VOLATILE:-0}" != 1 ]]; then
+  cat >&2 <<'EOF'
+!!! REFUSING TO RECORD: the root filesystem is a RAM overlay.
+
+    Anything written now is discarded when the Pi powers off. The recording would look
+    completely normal — right size, right frame count, readable — right up until you got
+    back and found nothing there. The entire point of this script is to bring data home,
+    so it fails here rather than after you have carried the Pi outside for half an hour.
+
+    Make the disk persistent:
+        sudo touch /overlay/disable && sudo reboot
+
+    Or, if you genuinely want a throwaway run:
+        CAPTURE_ALLOW_VOLATILE=1 sudo ./capture.sh
+EOF
+  exit 1
+fi
+
 # The clock is wrong until Stratux gets a GPS fix and sets it, so a timestamp alone is not unique —
 # two captures on the same stuck clock would collide and the second would overwrite the first.
 # Seconds-since-boot disambiguates them and is monotonic regardless of what the clock thinks.
@@ -56,6 +96,15 @@ SUMMARY="$SESSION/summary.txt"
 # exist, because `cut` is what sets the exit status, so a `|| echo "?"` fallback on the pipeline can
 # never fire. That would have written empty fields into the health log on any board where vcgencmd
 # is missing, and an empty field reads as "measured nothing" rather than "could not measure".
+# `systemctl is-active` prints its answer AND exits non-zero for anything that is not active, so a
+# plain `|| echo unknown` appends a second line to the one it already printed. Take the output and
+# only substitute when there genuinely is none.
+svc() {
+  local out
+  out="$(systemctl is-active "$1" 2>/dev/null)" || true
+  printf '%s' "${out:-unknown}"
+}
+
 vc() {
   local out
   out="$(vcgencmd "$@" 2>/dev/null)" || { printf '?'; return 0; }
@@ -73,8 +122,9 @@ vc() {
   echo "source          : $HOST:$PORT"
   echo "model           : $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' || echo unknown)"
   echo "kernel          : $(uname -r)"
-  echo "display_running : $(systemctl is-active avionics 2>/dev/null || echo unknown)"
-  echo "stratux_running : $(systemctl is-active stratux 2>/dev/null || echo unknown)"
+  echo "display_running : $(svc avionics)"
+  echo "stratux_running : $(svc stratux)"
+  echo "persistence     : $PERSISTENCE"
   echo "throttled_start : $(vc get_throttled)"
   echo "temp_start      : $(vc measure_temp)"
 } > "$SESSION/manifest.txt"
@@ -131,6 +181,9 @@ SIZE="$(du -h "$RECORDING" 2>/dev/null | cut -f1 || echo '?')"
   echo "recording : $FRAMES frames, $SIZE"
   echo "record    : $([[ $RECORD_STATUS -eq 0 ]] && echo ok || echo "FAILED (exit $RECORD_STATUS) — see record.log")"
   echo "peak temp : $PEAK_TEMP"
+  if [[ "$PERSISTENCE" != PERSISTENT ]]; then
+    echo "storage   : $PERSISTENCE  <-- THIS RECORDING MAY NOT SURVIVE A POWER CYCLE"
+  fi
   if [[ "$MEASURED" -eq 0 ]]; then
     echo "throttled : UNKNOWN  <-- BOARD HEALTH WAS NOT MEASURED"
     echo

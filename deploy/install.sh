@@ -194,6 +194,22 @@ do
   [[ -n "$candidate" && -x "$candidate" ]] && REPLAY_BIN="$candidate" && break
 done
 
+# Say plainly whether anything written here will still be here after a power cycle. The Stratux
+# image boots through /sbin/init-overlay, so the root filesystem is behind a RAM overlay unless
+# /overlay/disable exists — and captures are the one thing on this box whose entire value is
+# surviving a walk back indoors.
+ROOT_FS="$(findmnt -no FSTYPE / 2>/dev/null || echo unknown)"
+if [[ "$ROOT_FS" == overlay ]]; then
+  echo "    !!! root filesystem is a RAM OVERLAY — captures will NOT survive a power cycle."
+  echo "        Enable persistent disk with: sudo touch /overlay/disable && sudo reboot"
+elif grep -q 'init=/sbin/init-overlay' /proc/cmdline 2>/dev/null && [[ ! -e /overlay/disable ]]; then
+  echo "    !!! the overlay is off now but WILL engage on the next boot (/overlay/disable missing)."
+  echo "        The capture timer runs after boot, so captures would land in RAM."
+  echo "        Enable persistent disk with: sudo touch /overlay/disable"
+else
+  echo "    persistent disk: yes (root is $ROOT_FS, writes survive a power cycle)"
+fi
+
 if [[ -z "$REPLAY_BIN" ]]; then
   echo "    no replay binary found — skipping. Push one with deploy.sh and re-run."
 else
