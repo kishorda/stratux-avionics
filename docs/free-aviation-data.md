@@ -51,7 +51,7 @@ and radial distance`. The bbox is required.
 | **adsb.fi, airplanes.live, ADSBiq** | All viable community feeds with similar shapes and licences. Any of them could be swapped in by changing one URL in `fetch-snapshot.sh`. adsb.lol was picked for having the simplest documented radius query. Terms lean non-commercial. |
 | **AVWX, CheckWX, metar-taf.com** | Decoded weather in tidy JSON, free tiers available — but they need keys, and the display wants the *raw* report anyway because decoding is its own job (`glossary.rs`). A pre-decoded feed would bypass the very code under test. |
 | **NOAA NEXRAD mosaics** | Free and public domain, but delivered as imagery or Level II/III radar products, not as the FIS-B block structure Stratux publishes. Converting one to the other means writing the geo-referencing this project deliberately does not have to write, because Stratux hands over `NEXRADBlock` already decoded. Left alone — see below. |
-| **OurAirports, FAA NASR** | Free airport and airspace databases. Genuinely useful, and no use here: Phase 1 has no basemap, so there is nothing to put them on. |
+| **OurAirports, FAA NASR** | Rejected here when this was written, for having nothing to put them on. That changed: OurAirports and the FAA's Class Airspace layer now feed the map layer, built by `tools/chartdata`. Both are public domain, which is why that file is committed and snapshots are not. See [airspace-and-airports.md](airspace-and-airports.md). |
 
 ## Two ways to use them
 

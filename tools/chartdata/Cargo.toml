@@ -1,0 +1,14 @@
+[package]
+name = "chartdata"
+description = "Builds the airport and airspace file the plan view reads, from OurAirports and FAA AIS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+# No HTTP client on purpose. fetch-chartdata.sh does the downloading with curl, for the reason
+# fetch-snapshot.sh gives: a TLS stack is not something the workspace should grow without cause.
+# This crate is never cross-compiled — deploy.sh builds `-p avionics` — so none of it ships.

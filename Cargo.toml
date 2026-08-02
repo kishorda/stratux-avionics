@@ -9,6 +9,7 @@ members = [
     "crates/avionics",
     "tools/replay",
     "tools/mock-stratux",
+    "tools/chartdata",
 ]
 
 [workspace.package]

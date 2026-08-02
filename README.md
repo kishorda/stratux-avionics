@@ -273,8 +273,9 @@ device.
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
+| M7 | Airports + airspace map layer | **data only** — `tools/chartdata` builds the CONUS file (20,736 airports, 1,408 Class B/C/D polygons); nothing drawn on the panel yet |
 
-264 tests passing, clippy clean.
+308 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -306,6 +307,7 @@ crates/avionics-input   evdev multitouch to gestures
 crates/avionics         The display binary
 tools/replay            record / synth / stats / play CLI
 tools/mock-stratux      a fake Stratux for desk testing, seeded from free public data
+tools/chartdata         builds the airport and airspace file from OurAirports and FAA AIS
 deploy/                 install, hardening and on-hardware test harnesses
 ```
 
@@ -1088,5 +1090,10 @@ points `linker` at `deploy/cross-cc-<triple>.sh` instead of at the cross-gcc dir
 
 ### Out of scope for Phase 1
 
-No basemap, terrain, airports or airspace. No traffic audio alerts. No flight logging or track
-recording. No touch-driven Stratux configuration — the web UI on the retained AP covers that.
+No terrain. No traffic audio alerts. No flight logging or track recording. No touch-driven Stratux
+configuration — the web UI on the retained AP covers that.
+
+Airports and airspace **were** on this list, and are now being built: the data pipeline
+(`tools/chartdata`) and the file it produces are in the repo, and nothing is drawn on the panel
+yet. See [docs/airspace-and-airports.md](docs/airspace-and-airports.md) for the design, the
+measurements behind each threshold, and why the vertical part is deliberately last.

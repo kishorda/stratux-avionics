@@ -26,3 +26,9 @@
 # from adsb.lol, which is a different licence from this repo, and they are re-fetchable in
 # seconds. See docs/free-aviation-data.md.
 snapshot*.json
+
+# Source data downloaded by tools/chartdata/fetch-chartdata.sh — 23 MB of CSV and GeoJSON that is
+# only an input. The *built* file (crates/avionics-ui/data/conus.chart) IS committed: both sources
+# are public domain, and the FAA endpoint serves only the current AIRAC cycle, so a past cycle
+# cannot be fetched again. See docs/airspace-and-airports.md.
+/tools/chartdata/source
