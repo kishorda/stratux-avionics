@@ -404,3 +404,79 @@ fn orientation_toggles() {
     view.toggle_orientation();
     assert_eq!(view.orientation, Orientation::NorthUp);
 }
+
+// --- traffic held back for want of own-ship -------------------------------------------------
+
+/// Build a state holding `targets`, with no own-ship position — the outdoor-test situation.
+fn state_without_ownship(targets: Vec<Target>) -> stratux_client::AppState {
+    let mut state = stratux_client::AppState::new();
+    for (i, mut t) in targets.into_iter().enumerate() {
+        t.icao = 0x100000 + i as u32;
+        state.targets.insert(t.icao, t);
+    }
+    assert!(
+        state.ownship.usable_position().is_none(),
+        "this fixture is only meaningful without an own-ship position"
+    );
+    state
+}
+
+#[test]
+fn traffic_received_without_own_ship_is_counted_not_forgotten() {
+    // The real failure this exists for: outdoors, 187 ADS-B messages were decoded and two targets
+    // tracked while the panel showed nothing and the status bar read `TFC 0`, because the plan
+    // view cannot place anything without an origin. A dead receiver looked exactly the same.
+    let now = Instant::now();
+    let state = state_without_ownship(vec![
+        target(Some(at_bearing(0.0, 4.0))),
+        target(Some(at_bearing(90.0, 7.0))),
+    ]);
+    assert_eq!(
+        avionics_ui::planview::unplotted_count(&state, now, &ReckonConfig::default()),
+        2
+    );
+}
+
+#[test]
+fn targets_without_a_position_are_not_counted_as_held() {
+    // Mode-S-only targets have nothing to plot even with own-ship, so counting them here would
+    // promise traffic that a GPS fix would not actually reveal. They have their own status-bar
+    // field for that reason.
+    let now = Instant::now();
+    let state = state_without_ownship(vec![target(None), target(None)]);
+    assert_eq!(
+        avionics_ui::planview::unplotted_count(&state, now, &ReckonConfig::default()),
+        0
+    );
+}
+
+#[test]
+fn a_coasting_target_still_counts_as_held() {
+    // A fix too old to extrapolate from is frozen and drawn dimmed, not dropped — `reckon` only
+    // returns None when there is no position at all. So a coasting target WOULD have appeared had
+    // own-ship been available, and must be counted. Getting this backwards would under-report the
+    // receiver's health in exactly the situation where reassurance matters most.
+    let config = ReckonConfig::default();
+    let now = Instant::now();
+    let mut coasting = target(Some(at_bearing(0.0, 4.0)));
+    coasting.age_s = config.max_fix_age_s * 3.0;
+    coasting.received = now - Duration::from_secs(600);
+
+    assert!(
+        reckon(&coasting, now, &config).is_some_and(|r| r.coasting),
+        "fixture is meant to be a coasting target"
+    );
+    let state = state_without_ownship(vec![coasting]);
+    assert_eq!(avionics_ui::planview::unplotted_count(&state, now, &config), 1);
+}
+
+#[test]
+fn an_empty_sky_is_still_reported_as_empty() {
+    // The counter must not invent reassurance when there genuinely is nothing being received.
+    let now = Instant::now();
+    let state = state_without_ownship(vec![]);
+    assert_eq!(
+        avionics_ui::planview::unplotted_count(&state, now, &ReckonConfig::default()),
+        0
+    );
+}

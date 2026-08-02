@@ -248,6 +248,14 @@ pub struct FrameStats {
     pub targets_outside_range: usize,
     /// Targets heard without a position: Mode-S only, or ADS-B before its first position report.
     pub targets_no_position: usize,
+    /// Targets with a good position that could not be drawn because **own-ship** is missing.
+    ///
+    /// This is the count that distinguishes "the sky is empty" from "the radios are working and
+    /// the GPS is not". Without it the two are identical on screen: the plan view needs an origin
+    /// before it can place anything, so a GPS failure blanks the display exactly as a dead
+    /// receiver would. That happened on a real outdoor test — 187 ADS-B messages and two targets
+    /// were being decoded while the panel showed nothing and `TFC 0`.
+    pub targets_unplotted: usize,
     pub targets_coasting: usize,
     pub advisories: usize,
     pub alerts: usize,

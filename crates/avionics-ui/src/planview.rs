@@ -68,8 +68,13 @@ pub fn draw(
         // Rings are still drawn, so the display looks alive and the range selection is visible,
         // but nothing is plotted: without own-ship there is no origin and every relative position
         // would be a fabrication.
+        //
+        // Count what is being held back anyway. These targets have good positions and are only
+        // missing somewhere to be drawn relative to, which is a completely different situation
+        // from an empty sky and must not look the same.
+        stats.targets_unplotted = unplotted_count(state, now, &ui.reckon);
         let _ = draw_rings(ui, canvas, view, layout, None);
-        draw_no_position_notice(ui, canvas, state, layout);
+        draw_no_position_notice(ui, canvas, state, layout, stats.targets_unplotted);
         // Draw the footer here too, so the layout stays intact and the selected range is still
         // visible. A screen that loses a whole row of chrome looks broken rather than degraded.
         draw_footer(ui, canvas, layout, state, view);
@@ -290,6 +295,21 @@ fn draw_rings(
     }
 
     reserved
+}
+
+/// Targets that have a usable position and are only missing somewhere to be drawn relative to.
+///
+/// Counted with exactly the same admission rules the normal path uses — positional, and still
+/// current enough to dead-reckon — so the number cannot promise traffic that would not have been
+/// drawn anyway had own-ship been available. A count that overstated the situation would be worse
+/// than none, because its whole job is to tell the pilot the receiver is healthy.
+///
+/// Pure, and free of [`Ui`], so it can be tested without a GPU; the drawing around it cannot.
+pub fn unplotted_count(state: &AppState, now: Instant, config: &crate::ReckonConfig) -> usize {
+    state
+        .positional_targets()
+        .filter(|t| reckon(t, now, config).is_some())
+        .count()
 }
 
 /// Smallest angular separation between two angles, in radians. Always in `0..=PI`.
@@ -689,7 +709,13 @@ fn draw_footer(
 }
 
 /// Shown in place of traffic when there is no own-ship position to plot against.
-fn draw_no_position_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout) {
+fn draw_no_position_notice(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    state: &AppState,
+    layout: &Layout,
+    unplotted: usize,
+) {
     let theme = &ui.theme;
     let (cx, cy) = layout.center;
 
@@ -716,6 +742,25 @@ fn draw_no_position_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layou
     sub.set_text_align(Align::Center);
     sub.set_text_baseline(Baseline::Top);
     let _ = canvas.fill_text(cx, cy + 4.0, detail, &sub);
+
+    // The line that says the radios are alive.
+    //
+    // Deliberately in the "good" colour rather than a warning one: this is reassurance, not
+    // another alarm. The problem is already named above it, and the point of this line is to stop
+    // the pilot chasing an antenna or a receiver when what has actually failed is the GPS.
+    if unplotted > 0 {
+        let mut held = Paint::color(theme.good);
+        held.set_font(&[ui.font()]);
+        held.set_font_size(theme.font_size_small);
+        held.set_text_align(Align::Center);
+        held.set_text_baseline(Baseline::Top);
+        let text = if unplotted == 1 {
+            "1 target received — needs own-ship position to plot".to_string()
+        } else {
+            format!("{unplotted} targets received — need own-ship position to plot")
+        };
+        let _ = canvas.fill_text(cx, cy + 4.0 + theme.font_size_small * 1.6, &text, &held);
+    }
 }
 
 /// Ranges below 1 nm would need a decimal; the selectable set is all integers, so this just avoids

@@ -111,6 +111,12 @@ pub fn draw(
     if stats.targets_no_position > 0 {
         traffic.push_str(&format!(" +{} nopos", stats.targets_no_position));
     }
+    // Held back for want of an own-ship position, not absent. `TFC 0` next to a working receiver
+    // is the exact reading that sent a real outdoor test looking for an antenna fault when the
+    // GPS was the thing that had failed.
+    if stats.targets_unplotted > 0 {
+        traffic.push_str(&format!(" +{} held", stats.targets_unplotted));
+    }
     let traffic_colour = if stats.alerts > 0 {
         theme.warning
     } else if stats.advisories > 0 {

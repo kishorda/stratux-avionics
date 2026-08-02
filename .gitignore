@@ -13,3 +13,6 @@
 # Archive trust anchors cached by deploy/fetch-target-debs.sh. The verifiable thing is the
 # pinned fingerprint in that script, which IS version-controlled; this is just a cache.
 /deploy/keyrings
+# Sessions pulled off the Pi by deploy/capture.sh. Real recordings from real trips —
+# large, and specific to one flight, so kept out of the repo but NOT out of the way.
+/captures

@@ -112,6 +112,52 @@ vc() {
   printf '%s' "${out#*=}"
 }
 
+# --- the things that made the last outdoor trip un-diagnosable ------------------------------
+#
+# A session came back with no GPS fix, no weather and a report that the access point was off, and
+# none of it could be answered afterwards: the journal is volatile, so once the Pi is power-cycled
+# the only evidence is what was written to disk while it ran. These sample the three subsystems
+# whose absence is otherwise indistinguishable from "nothing was in range".
+
+# Is the access point actually up, and is anyone on it?
+ap_state() {
+  [[ -e /sys/class/net/ap0 ]] || { printf 'absent'; return 0; }
+  local s
+  s="$(cat /sys/class/net/ap0/operstate 2>/dev/null)" || { printf '?'; return 0; }
+  printf '%s' "${s:-?}"
+}
+
+ap_clients() {
+  # `grep -c` exits non-zero when it counts zero, so the usual `|| fallback` would report "no iw"
+  # every time the AP simply had no clients. Check for the tool up front instead.
+  command -v iw >/dev/null 2>&1 || { printf '?'; return 0; }
+  [[ -e /sys/class/net/ap0 ]] || { printf '?'; return 0; }
+  local n
+  n="$(iw dev ap0 station dump 2>/dev/null | grep -c '^Station' || true)"
+  printf '%s' "${n:-0}"
+}
+
+# Satellites, fix state and message totals, straight from Stratux. Satellites *seen* is the field
+# that matters: it separates "the antenna cannot see sky" from "the receiver is not talking", and
+# those need completely different fixes.
+stratux_sample() {
+  local json
+  json="$(curl -s --max-time 2 "http://$HOST:$PORT/getStatus" 2>/dev/null)" || { printf '?,?,?,?,?'; return 0; }
+  [[ -n "$json" ]] || { printf '?,?,?,?,?'; return 0; }
+  printf '%s' "$json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("?,?,?,?,?"); raise SystemExit
+g = lambda k: d.get(k, "?")
+print(",".join(str(x) for x in (
+    g("GPS_satellites_seen"), g("GPS_satellites_locked"),
+    str(g("GPS_solution")).replace(" ", "_").replace(",", ""),
+    g("ES_messages_total"), g("UAT_messages_total"))))
+' 2>/dev/null || printf '?,?,?,?,?'
+}
+
 # --- manifest: what this run even was ------------------------------------------------------
 {
   echo "captured_by     : capture.sh"
@@ -125,20 +171,25 @@ vc() {
   echo "display_running : $(svc avionics)"
   echo "stratux_running : $(svc stratux)"
   echo "persistence     : $PERSISTENCE"
+  echo "ap0             : $(ap_state)  $(ip -brief addr show ap0 2>/dev/null | awk '{print $3}')"
+  echo "ap0_ssid        : $(iw dev ap0 info 2>/dev/null | awk '/ssid/{print $2}')"
   echo "throttled_start : $(vc get_throttled)"
   echo "temp_start      : $(vc measure_temp)"
 } > "$SESSION/manifest.txt"
 
 # --- health sampler -------------------------------------------------------------------------
-echo "uptime_s,throttled,temp_c,arm_hz,load1" > "$HEALTH"
+echo "uptime_s,throttled,temp_c,arm_hz,load1,ap,ap_clients,sats_seen,sats_locked,gps_solution,es_total,uat_total" > "$HEALTH"
 (
   while :; do
-    printf '%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$(cut -d' ' -f1 /proc/uptime)" \
       "$(vc get_throttled)" \
-      "$(vc measure_temp | tr -dc '0-9.')" \
+      "$(t=$(vc measure_temp); case "$t" in *[0-9]*) printf '%s' "$t" | tr -dc '0-9.' ;; *) printf '?' ;; esac)" \
       "$(vc measure_clock arm)" \
-      "$(cut -d' ' -f1 /proc/loadavg)" >> "$HEALTH"
+      "$(cut -d' ' -f1 /proc/loadavg)" \
+      "$(ap_state)" \
+      "$(ap_clients)" \
+      "$(stratux_sample)" >> "$HEALTH"
     sleep "$INTERVAL"
   done
 ) &
@@ -213,6 +264,47 @@ SIZE="$(du -h "$RECORDING" 2>/dev/null | cut -f1 || echo '?')"
   else
     echo "throttled : 0x0 across $MEASURED samples  (clean run)"
   fi
+  # --- the three questions the last trip could not answer -------------------------------------
+  AP_UP="$(awk -F, 'NR>1 && $6=="up"' "$HEALTH" | wc -l)"
+  AP_PEAK="$(awk -F, 'NR>1 && $7 ~ /^[0-9]+$/ {if ($7+0>m) m=$7+0} END {print m+0}' "$HEALTH")"
+  SATS_PEAK="$(awk -F, 'NR>1 && $8 ~ /^[0-9]+$/ {if ($8+0>m) m=$8+0} END {print m+0}' "$HEALTH")"
+  LOCK_PEAK="$(awk -F, 'NR>1 && $9 ~ /^[0-9]+$/ {if ($9+0>m) m=$9+0} END {print m+0}' "$HEALTH")"
+  ES_LAST="$(awk -F, 'NR>1 && $11 ~ /^[0-9]+$/ {v=$11} END {print v+0}' "$HEALTH")"
+  UAT_LAST="$(awk -F, 'NR>1 && $12 ~ /^[0-9]+$/ {v=$12} END {print v+0}' "$HEALTH")"
+
+  # Same trap as the throttle verdict: "no satellites found" and "never asked" look identical in
+  # the CSV, and only one of them justifies telling someone their antenna cannot see sky. Count
+  # what was actually measured before drawing any conclusion from it.
+  AP_MEASURED="$(awk -F, 'NR>1 && $6!="?" && $6!="absent"' "$HEALTH" | wc -l)"
+  GPS_MEASURED="$(awk -F, 'NR>1 && $8 ~ /^[0-9]+$/' "$HEALTH" | wc -l)"
+
+  if [[ "$AP_MEASURED" -eq 0 ]]; then
+    echo "access pt : no ap0 interface present — the AP was not running at all"
+  else
+    echo "access pt : up for $AP_UP of $AP_MEASURED samples, peak $AP_PEAK client(s)"
+  fi
+
+  if [[ "$GPS_MEASURED" -eq 0 ]]; then
+    echo "gps       : NOT MEASURED — Stratux did not answer, so nothing here says anything"
+    echo "            about the GPS. Do not read this as a bad antenna."
+  else
+    echo "gps       : peak $SATS_PEAK satellites seen, $LOCK_PEAK locked ($GPS_MEASURED samples)"
+  fi
+  if [[ "$GPS_MEASURED" -gt 0 && "$LOCK_PEAK" -eq 0 && "$SATS_PEAK" -le 4 ]]; then
+    echo "            ^ a u-blox with a clear view of the sky sees 10-20 within a couple of"
+    echo "              minutes. Under 5 means the antenna cannot see sky — check it is flat,"
+    echo "              face up, and with nothing above it. This is not a receiver fault."
+  fi
+  if [[ "$GPS_MEASURED" -eq 0 ]]; then
+    echo "radios    : not measured (Stratux did not answer)"
+  else
+    echo "radios    : $ES_LAST ES (1090) messages, $UAT_LAST UAT (978) messages"
+  fi
+  if [[ "$GPS_MEASURED" -gt 0 && "$UAT_LAST" -eq 0 && "$ES_LAST" -gt 0 ]]; then
+    echo "            ^ 1090 is working. Zero UAT is normal on the ground: FIS-B ground stations"
+    echo "              are line-of-sight and aimed at aircraft, so weather often needs altitude."
+  fi
+
   if [[ "$FRAMES" -eq 0 ]]; then
     echo
     echo "  NOTHING WAS RECORDED. Stratux was probably not up, or not listening on $HOST:$PORT."
