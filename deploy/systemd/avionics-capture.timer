@@ -3,13 +3,15 @@ Description=Start a Stratux capture shortly after boot
 Documentation=file:///opt/avionics/README.md
 
 [Timer]
-# Five minutes, so the capture is of a working system rather than of one booting.
+# One minute: long enough to be past the boot itself, short enough to catch the GPS acquiring.
 #
-# A u-blox cold start with no almanac takes a good while to reach a 3D fix, the SDRs need to be
-# up and decoding, and the display's own start-up costs land in the first seconds. Recording from
-# t=0 mostly captures none of the things worth capturing, and the GPS fix — one of the reasons for
-# going outside at all — would be missing from the front of every session.
-OnBootSec=5min
+# This started at five minutes, on the reasoning that a u-blox cold start takes a while to reach a
+# 3D fix and a capture beginning before that would miss it. That reasoning does not survive the
+# capture being half an hour long — the fix lands inside the recording either way, and starting
+# earlier means the *acquisition itself* is on record. Time to first fix is one of the things worth
+# knowing about this box, and it can only be measured from a session that was already running when
+# it happened. The cost is a minute or so of near-empty frames at the front.
+OnBootSec=1min
 AccuracySec=10s
 
 # Deliberately not Persistent=. This fires once per boot, which matches how it is used: power the

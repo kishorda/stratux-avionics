@@ -249,7 +249,7 @@ Start the display now with:
     journalctl -u avionics -f
 
 Take a capture outside:
-    sudo systemctl enable --now avionics-capture.timer   # records 5 min after each boot
+    sudo systemctl enable --now avionics-capture.timer   # records 1 min after each boot
     # ... carry the Pi out on a battery, power it up, leave it, bring it back ...
     sudo systemctl disable avionics-capture.timer
     cat /var/log/avionics-capture/*/summary.txt          # check it was a clean run

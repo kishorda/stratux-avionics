@@ -179,7 +179,16 @@ SIZE="$(du -h "$RECORDING" 2>/dev/null | cut -f1 || echo '?')"
 {
   echo "session   : $STAMP"
   echo "recording : $FRAMES frames, $SIZE"
-  echo "record    : $([[ $RECORD_STATUS -eq 0 ]] && echo ok || echo "FAILED (exit $RECORD_STATUS) — see record.log")"
+  # 143 is SIGTERM and 130 SIGINT: someone stopped the capture, or the Pi was shut down while it
+  # ran — both entirely expected in the field, and neither is a failure. Calling them one would
+  # send you hunting a problem that is not there while nine hundred good frames sit next to the
+  # message. The final line of an interrupted recording is usually torn; the reader skips it and
+  # keeps the rest, which is what record.rs is written for.
+  case "$RECORD_STATUS" in
+    0)        echo "record    : ok" ;;
+    143|130)  echo "record    : stopped early (signal) — the recording is usable, its last line may be torn" ;;
+    *)        echo "record    : FAILED (exit $RECORD_STATUS) — see record.log" ;;
+  esac
   echo "peak temp : $PEAK_TEMP"
   if [[ "$PERSISTENCE" != PERSISTENT ]]; then
     echo "storage   : $PERSISTENCE  <-- THIS RECORDING MAY NOT SURVIVE A POWER CYCLE"
@@ -224,4 +233,8 @@ done
 echo
 echo "==> Done. Collect it from the dev machine with:"
 echo "    rsync -av pi@<pi>:$OUT_DIR/ ./captures/"
-exit "$RECORD_STATUS"
+# Signals are a normal way for this to end, so do not propagate them as a unit failure.
+case "$RECORD_STATUS" in
+  143|130) exit 0 ;;
+  *)       exit "$RECORD_STATUS" ;;
+esac
