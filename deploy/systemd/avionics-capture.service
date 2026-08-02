@@ -1,0 +1,37 @@
+[Unit]
+Description=Unattended Stratux session capture
+Documentation=file:///opt/avionics/README.md
+
+# Wants, not Requires: if Stratux is down the capture should still run, write an empty recording
+# and say so in its summary. A capture that silently did not start is indistinguishable from one
+# that recorded nothing, and only one of those is worth walking back outside for.
+After=stratux.service
+Wants=stratux.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/avionics/bin/capture.sh
+User=root
+
+# The whole point is a long run. systemd's default start timeout is 90 seconds, which would kill
+# a thirty-minute capture at the ninety-second mark and leave a truncated file that looks like a
+# reception problem.
+TimeoutStartSec=infinity
+
+# Do not perturb what is being measured. The usual reason to run this is to find out what the
+# renderer and the radios cost each other, and a capture process competing for the same cores
+# would be measuring itself. Nice rather than idle scheduling: the socket read must still be
+# serviced promptly or the recording loses frames.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+Environment=CAPTURE_DURATION=1800
+Environment=CAPTURE_DIR=/var/log/avionics-capture
+Environment=CAPTURE_KEEP=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -44,6 +44,17 @@ cargo build --release --target "$TARGET" -p "$BIN" --no-default-features --featu
 echo "==> Copying the binary to $HOST:$DEST/$BIN"
 rsync -az --info=progress2 "target/$TARGET/release/$BIN" "$HOST:$DEST/$BIN"
 
+# The recorder travels with the display. It is what capture.sh runs, and the whole reason for
+# having it on the Pi is to take a session somewhere with a sky view and no network — which is
+# exactly when you cannot go back and fetch a missing binary.
+if [[ "$BIN" == "avionics" && "${WITH_REPLAY:-1}" == "1" ]]; then
+  echo "==> Building replay for $TARGET"
+  cargo build --release --target "$TARGET" -p replay
+  "$ROOT/deploy/check-glibc.sh" --max "${GLIBC_MAX:-2.36}" "target/$TARGET/release/replay"
+  echo "==> Copying replay to $HOST:$DEST/replay"
+  rsync -az "target/$TARGET/release/replay" "$HOST:$DEST/replay"
+fi
+
 # install.sh reads the systemd unit from alongside itself, so the whole directory has to travel,
 # not just the binary. Without this the documented install flow fails at the last step.
 echo "==> Copying the deploy scripts to $HOST:$STAGE"

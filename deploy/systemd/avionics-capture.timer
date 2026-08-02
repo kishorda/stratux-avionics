@@ -1,0 +1,21 @@
+[Unit]
+Description=Start a Stratux capture shortly after boot
+Documentation=file:///opt/avionics/README.md
+
+[Timer]
+# Five minutes, so the capture is of a working system rather than of one booting.
+#
+# A u-blox cold start with no almanac takes a good while to reach a 3D fix, the SDRs need to be
+# up and decoding, and the display's own start-up costs land in the first seconds. Recording from
+# t=0 mostly captures none of the things worth capturing, and the GPS fix — one of the reasons for
+# going outside at all — would be missing from the front of every session.
+OnBootSec=5min
+AccuracySec=10s
+
+# Deliberately not Persistent=. This fires once per boot, which matches how it is used: power the
+# Pi up outside, let it record, bring it back. A missed run should not be made up on the next boot
+# indoors, where there is nothing to see.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

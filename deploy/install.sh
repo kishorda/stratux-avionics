@@ -179,6 +179,36 @@ run systemctl daemon-reload
 run systemctl enable avionics.service
 note "installed and enabled avionics.service (undo: systemctl disable --now avionics)"
 
+# --- unattended capture -------------------------------------------------------------------
+# Installed but NOT enabled. This is the tool for taking the Pi somewhere with a sky view and
+# leaving it, and it writes to the SD card — neither of which should start happening because
+# somebody installed the display.
+step "Installing the unattended capture (not enabled)"
+REPLAY_BIN=""
+for candidate in \
+  "${REPLAY_BINARY:-}" \
+  "$SCRIPT_DIR/replay" \
+  /tmp/replay \
+  "$SCRIPT_DIR/../target/aarch64-unknown-linux-gnu/release/replay"
+do
+  [[ -n "$candidate" && -x "$candidate" ]] && REPLAY_BIN="$candidate" && break
+done
+
+if [[ -z "$REPLAY_BIN" ]]; then
+  echo "    no replay binary found — skipping. Push one with deploy.sh and re-run."
+else
+  echo "    binary: $REPLAY_BIN"
+  run install -m 0755 "$REPLAY_BIN" "$PREFIX/bin/replay"
+  run install -m 0755 "$SCRIPT_DIR/capture.sh" "$PREFIX/bin/capture.sh"
+  run install -d -m 0755 /var/log/avionics-capture
+  run install -m 0644 "$SCRIPT_DIR/systemd/avionics-capture.service" \
+    /etc/systemd/system/avionics-capture.service
+  run install -m 0644 "$SCRIPT_DIR/systemd/avionics-capture.timer" \
+    /etc/systemd/system/avionics-capture.timer
+  run systemctl daemon-reload
+  note "installed $PREFIX/bin/replay, $PREFIX/bin/capture.sh and avionics-capture.{service,timer} — NOT enabled"
+fi
+
 # --- done -------------------------------------------------------------------------------
 step "Summary"
 for change in "${CHANGES[@]}"; do
@@ -190,11 +220,27 @@ cat <<EOF
 Not done, on purpose:
   - The read-only root filesystem is NOT enabled. Configure Stratux the way you want it first,
     then run: sudo ./deploy/overlay.sh enable
+    NOTE: captures write to /var/log/avionics-capture. Give that a writable carve-out, or
+    take your captures before enabling the overlay.
   - Boot time has not been trimmed. Run: sudo ./deploy/boot-trim.sh
   - CPU pinning is commented out in avionics.service. Measure first:
         sudo ./deploy/soak.sh --compare
+  - The capture timer is installed but NOT enabled. It writes to the SD card and is only
+    wanted when you are deliberately taking the Pi somewhere with a sky view.
 
-Start it now with:
+Start the display now with:
     sudo systemctl start avionics
     journalctl -u avionics -f
+
+Take a capture outside:
+    sudo systemctl enable --now avionics-capture.timer   # records 5 min after each boot
+    # ... carry the Pi out on a battery, power it up, leave it, bring it back ...
+    sudo systemctl disable avionics-capture.timer
+    cat /var/log/avionics-capture/*/summary.txt          # check it was a clean run
+
+  Or record once, right now, without the timer:
+    sudo CAPTURE_DURATION=600 /opt/avionics/bin/capture.sh
+
+  Then from the dev machine:
+    rsync -av pi@<pi>:/var/log/avionics-capture/ ./captures/
 EOF
