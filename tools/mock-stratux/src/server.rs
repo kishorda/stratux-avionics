@@ -94,42 +94,73 @@ impl Channels {
 /// on serving the last good picture, flying it forward, until the next poll succeeds. A network
 /// blip must not blank the display or take the process down, or you end up debugging the mock
 /// instead of the thing you meant to test.
-async fn poll_feeds(world: Arc<Mutex<World>>, feeds: crate::feeds::Feeds) {
+async fn poll_feeds(world: Arc<Mutex<World>>, configured: crate::feeds::Feeds) {
     // Weather first and immediately: it is the slowest to arrive on a real FIS-B receiver and the
     // most annoying to wait for on a desk.
-    let mut traffic_tick = tokio::time::interval(feeds.traffic_every);
-    let mut weather_tick = tokio::time::interval(feeds.weather_every);
+    let mut traffic_tick = tokio::time::interval(configured.traffic_every);
+    let mut weather_tick = tokio::time::interval(configured.weather_every);
 
     loop {
         tokio::select! {
-            _ = traffic_tick.tick() => match crate::feeds::fetch_traffic(&feeds).await {
-                Ok(raw) => {
-                    match crate::feeds::to_snapshot(
-                        &feeds, raw,
-                        serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
-                    ) {
-                        Ok(snap) => {
-                            let targets = snap.targets();
-                            tracing::info!(count = targets.len(), "traffic poll");
-                            world.lock().await.refresh_traffic(targets);
+            _ = traffic_tick.tick() => {
+                let feeds = poll_centre(&world, &configured).await;
+                match crate::feeds::fetch_traffic(&feeds).await {
+                    Ok(raw) => {
+                        match crate::feeds::to_snapshot(
+                            &feeds, raw,
+                            serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
+                        ) {
+                            Ok(snap) => {
+                                let targets = snap.targets();
+                                tracing::info!(
+                                    count = targets.len(),
+                                    lat = format_args!("{:.4}", feeds.lat),
+                                    lon = format_args!("{:.4}", feeds.lon),
+                                    "traffic poll"
+                                );
+                                world.lock().await.refresh_traffic(targets);
+                            }
+                            Err(e) => tracing::warn!(error = %e, "traffic poll unusable"),
                         }
-                        Err(e) => tracing::warn!(error = %e, "traffic poll unusable"),
                     }
+                    Err(e) => tracing::warn!(error = %e, "traffic poll failed; serving the last picture"),
                 }
-                Err(e) => tracing::warn!(error = %e, "traffic poll failed; serving the last picture"),
-            },
+            }
             _ = weather_tick.tick() => {
+                let feeds = poll_centre(&world, &configured).await;
                 let (metar, taf, pirep) = crate::feeds::fetch_weather(&feeds).await;
                 match crate::feeds::to_snapshot(&feeds, serde_json::Value::Null, metar, taf, pirep) {
                     Ok(snap) => {
                         let added = world.lock().await.merge_weather(snap.weather());
-                        tracing::info!(added, "weather poll");
+                        tracing::info!(
+                            added,
+                            lat = format_args!("{:.4}", feeds.lat),
+                            lon = format_args!("{:.4}", feeds.lon),
+                            "weather poll"
+                        );
                     }
                     Err(e) => tracing::warn!(error = %e, "weather poll unusable"),
                 }
             }
         }
     }
+}
+
+/// The feed configuration re-centred on where own-ship is *now*.
+///
+/// With `--fly` own-ship does not stay where it started, and a fixed centre would slide the whole
+/// traffic picture off the aircraft at its ground speed — about 1.8 nm a minute at 110 kt, so a
+/// long session ends with own-ship flying out of its own data. Nothing about that looks like a
+/// fault, which is what makes it worth fixing rather than documenting.
+///
+/// The lock is taken and released here, never held across the request: the publish loop runs at
+/// 10 Hz and must not wait on a web server.
+async fn poll_centre(world: &Arc<Mutex<World>>, base: &crate::feeds::Feeds) -> crate::feeds::Feeds {
+    let (lat, lon) = {
+        let w = world.lock().await;
+        (w.ownship.lat, w.ownship.lon)
+    };
+    base.recentred(lat, lon)
 }
 
 pub async fn serve(world: World, config: Config) -> Result<()> {
@@ -385,6 +416,68 @@ mod tests {
                 "{stream:?} has a channel"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_poll_follows_own_ship_rather_than_where_it_started() {
+        // The regression this exists for: capturing the centre once meant the query stayed at the
+        // departure point while the aircraft flew away from it, and the display ended up showing
+        // a busy sky somewhere behind itself. Verified here rather than only in a live log,
+        // because a live log cannot fail a build.
+        use crate::world::{OwnShip, World};
+
+        let base = crate::feeds::Feeds {
+            lat: 40.7784,
+            lon: -74.3343,
+            radius_nm: 40,
+            traffic_every: Duration::from_secs(5),
+            weather_every: Duration::from_secs(600),
+        };
+
+        let mut ownship = OwnShip::stationary(base.lat, base.lon);
+        ownship.track_deg = Some(90.0);
+        ownship.ground_speed_kt = 600.0;
+        let world = Arc::new(Mutex::new(World::new(ownship, vec![], vec![])));
+
+        // Before moving, the query is exactly the configured one.
+        let start = poll_centre(&world, &base).await;
+        assert_eq!((start.lat, start.lon), (base.lat, base.lon));
+
+        world.lock().await.tick(Duration::from_secs(60));
+
+        let moved = poll_centre(&world, &base).await;
+        assert_eq!(moved.lat, base.lat, "a due-east track must not change latitude");
+        assert!(
+            moved.lon > base.lon + 0.1,
+            "the query should have moved east with the aircraft: {} vs {}",
+            moved.lon,
+            base.lon
+        );
+        assert_eq!(moved.radius_nm, base.radius_nm, "radius must not drift");
+    }
+
+    #[tokio::test]
+    async fn a_stationary_own_ship_polls_the_same_place_forever() {
+        // The common case. Re-centring must be a no-op when nothing is moving, or every snapshot
+        // and ground test would start querying somewhere slightly different each time.
+        use crate::world::{OwnShip, World};
+
+        let base = crate::feeds::Feeds {
+            lat: 40.7784,
+            lon: -74.3343,
+            radius_nm: 40,
+            traffic_every: Duration::from_secs(5),
+            weather_every: Duration::from_secs(600),
+        };
+        let world = Arc::new(Mutex::new(World::new(
+            OwnShip::stationary(base.lat, base.lon),
+            vec![],
+            vec![],
+        )));
+
+        world.lock().await.tick(Duration::from_secs(600));
+        let after = poll_centre(&world, &base).await;
+        assert_eq!((after.lat, after.lon), (base.lat, base.lon));
     }
 
     #[test]

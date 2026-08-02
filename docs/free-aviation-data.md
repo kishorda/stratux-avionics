@@ -66,6 +66,9 @@ floors enforced in the CLI. The world model flies targets forward in between, so
 sees a fresh position every second. That is not a trick to disguise the poll rate: it is the same
 dead reckoning the display does, and the arriving fix snaps the target back to the truth.
 
+Each poll re-centres on own-ship's current position, so `--fly` drags the query along with the
+aircraft instead of leaving it over the departure point.
+
 A failed poll is logged and swallowed. The last good picture keeps being served and flown forward
 until the next one succeeds, because a wifi blip that blanked the display would have you debugging
 the mock instead of the thing you meant to test.

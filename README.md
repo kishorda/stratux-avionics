@@ -258,7 +258,7 @@ device.
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-258 tests passing, clippy clean.
+262 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -418,6 +418,11 @@ truth, exactly as a real ADS-B update does.
 Polling defaults to 5 s for traffic and 10 minutes for weather, tunable with `--poll` and
 `--weather-poll`. Both have floors: these are free community services, and the flown-forward
 motion means a faster poll buys nothing anyway.
+
+Each poll asks about wherever own-ship is **now**. With `--fly` that matters: a centre captured
+once would slide the traffic picture off the aircraft at its ground speed — about 1.8 nm a minute
+at 110 kt — until it was flying through a busy sky somewhere behind itself, which looks like
+nothing at all until you notice the airport went past.
 
 **Snapshots are gitignored on purpose.** adsb.lol's data is ODbL — attribution and share-alike —
 which does not match this repo's licensing. aviationweather.gov is a US Government work and public

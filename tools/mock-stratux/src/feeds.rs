@@ -46,6 +46,21 @@ pub struct Feeds {
 }
 
 impl Feeds {
+    /// The same configuration, centred somewhere else.
+    ///
+    /// The centre is where to *look*, and with `--fly` own-ship does not stay where it started.
+    /// Capturing the centre once would mean the traffic picture slowly slid off the aircraft —
+    /// at 110 kt about 1.8 nm a minute, so a long session ends with own-ship flying out of its own
+    /// data while the display shows a busy sky somewhere behind it. Nothing about that looks like
+    /// a fault, which is what makes it worth fixing rather than documenting.
+    ///
+    /// Re-centring costs nothing: it is the same one request, just asking about where the aircraft
+    /// actually is. So it happens every poll rather than past some threshold that would be one
+    /// more thing to tune and to get wrong.
+    pub fn recentred(&self, lat: f64, lon: f64) -> Self {
+        Self { lat, lon, ..self.clone() }
+    }
+
     /// A bounding box `radius_nm` around the centre, as aviationweather.gov wants it.
     ///
     /// Longitude degrees shrink with latitude, so the box would be too narrow east-west without
@@ -200,6 +215,33 @@ mod tests {
             "https://aviationweather.gov/api/data/metar?bbox="
         ));
         assert!(f.weather_url("taf").ends_with("&format=json"));
+    }
+
+    #[test]
+    fn recentring_moves_the_query_and_keeps_everything_else() {
+        // The whole point: a flying own-ship must drag the query along with it, without quietly
+        // changing the radius or the poll rate on the way.
+        let f = feeds();
+        let moved = f.recentred(41.5, -73.0);
+
+        assert_eq!(moved.lat, 41.5);
+        assert_eq!(moved.lon, -73.0);
+        assert_eq!(moved.radius_nm, f.radius_nm);
+        assert_eq!(moved.traffic_every, f.traffic_every);
+        assert_eq!(moved.weather_every, f.weather_every);
+
+        assert!(moved.traffic_url().contains("lat/41.5/lon/-73"));
+        assert_ne!(moved.bbox(), f.bbox(), "the weather box must move too");
+    }
+
+    #[test]
+    fn recentring_on_the_same_place_changes_nothing() {
+        // A stationary own-ship is the common case, and it must not produce a different query
+        // than it did before re-centring existed.
+        let f = feeds();
+        let same = f.recentred(f.lat, f.lon);
+        assert_eq!(same.traffic_url(), f.traffic_url());
+        assert_eq!(same.bbox(), f.bbox());
     }
 
     #[test]
