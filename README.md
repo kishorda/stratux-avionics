@@ -82,21 +82,22 @@ far overhead.
 
 ### Weather text
 
-![FIS-B text page listing METAR, TAF and PIREP](docs/images/weather-raw.png)
+![FIS-B text page listing live METARs](docs/images/weather-raw.png)
 
-Raw FIS-B products, newest first, each carrying **its own age** — delivery is opportunistic, so
-one station can be twenty minutes stale while its neighbour is current and nothing on the wire
-warns you. Hazards are highlighted inside the raw text (`FZRA` here) and the flight category is
-badged (`LIFR`).
+Real observations, pulled from aviationweather.gov moments before this was rendered. Newest first,
+each carrying **its own age** — delivery is opportunistic, so one station can be twenty minutes
+stale while its neighbour is current and nothing on the wire warns you. Hazards are highlighted
+inside the raw text and the flight category is badged (`VFR` here, green).
 
 ### Weather, decoded
 
-![The same METAR expanded into a glossary of its abbreviations](docs/images/weather-decoded.png)
+![A live TAF expanded into a glossary of its abbreviations](docs/images/weather-decoded.png)
 
 The `DECODE` soft key expands the selected report into every abbreviation it contains, including
-the structured groups — `291853Z` resolves through `Z`, `05010KT` through `KT`, `A2988` through
-`A`. Sourced from the NWS METAR/TAF card and FMH-1 chapter 5. Highlighted hazard codes keep their
-colour in the expansion so the eye lands on the same thing twice.
+the structured groups — `021740Z` resolves through `Z`, `16012KT` through `KT`, `P6SM` through `P`
+and `SM`. Sourced from the NWS METAR/TAF card and FMH-1 chapter 5. This is a real KABE forecast
+carrying `TSRA`, and the hazard keeps its colour in the expansion so the eye lands on the same
+thing twice.
 
 ### Attitude
 
@@ -104,6 +105,10 @@ colour in the expansion so the eye lands on the same thing twice.
 
 Pitch ladder, roll scale, sky/ground horizon, and moving tapes for ground speed, barometric
 altitude, vertical speed and track. `LEVEL` cages the AHRS from the panel.
+
+The footer reads `TRK gps 090°`, not `HDG`. That distinction is the point of the caption: the mag
+and gyro headings arrive as the hardware's in-band sentinel `3276.7`, so the source falls back to
+GPS track and says which one it is showing.
 
 **`AHRS — NOT FOR PRIMARY REFERENCE` is on screen permanently and deliberately.** There is no
 certified IMU here; the attitude comes from a hobby sensor and GPS-derived track.
@@ -183,6 +188,17 @@ cargo build --release -p avionics -p replay
     --alt-filter all
 ```
 
+The weather and attitude shots above come from `--internet` rather than from synth, because real
+reports and a real airborne state beat a fixture:
+
+```sh
+cargo run --release -p mock-stratux -- --internet --fly 090@110 &
+./target/release/avionics --host 127.0.0.1 --port 8080 --offscreen \
+    --out /tmp/shots/net --frames 240 --dump-every 230 --range 20
+```
+
+The plan-view shot with the NEXRAD underlay stays on synth: no free feed publishes FIS-B blocks.
+
 Output is PPM; convert with any of `pnmtopng`, ImageMagick, or Pillow.
 
 `captures/` is gitignored — recordings are large and specific to one trip — so the last command
@@ -258,7 +274,7 @@ device.
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-262 tests passing, clippy clean.
+264 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -410,6 +426,24 @@ idea it is not talking to a Pi. That is the whole point: no `--internet` flag on
 HTTP client in the aircraft binary. `cargo tree -p avionics` shows no `reqwest`, `rustls` or
 `hyper`.
 
+#### What it looks like
+
+Live, over New York, own-ship flying east at 110 kt and 3500 ft (`--fly 090@110`):
+
+![Plan view of live traffic with the default altitude band](docs/images/internet-plan-view.png)
+
+`TFC 17 +163 out +73 alt` — seventeen drawn, 163 beyond the 20 nm ring, and **73 withheld by the
+altitude band**, which is why `ALT NRM` is amber in both the key and the footer. The amber symbol
+near own-ship is a traffic advisory on a real aircraft.
+
+The same instant with the band opened to `ALT ALL`:
+
+![The same scene unfiltered, showing the full traffic density](docs/images/internet-plan-all.png)
+
+`TFC 93 +159 out`. Ninety-three targets, tags fighting for space and losing. This is the honest
+answer to what the display does in the busiest airspace in the country, and it is not something
+twelve synthetic targets will ever show you.
+
 New York metro is about 210 aircraft and 40 weather products. Targets are flown forward along
 their reported track and speed between polls, so the picture stays alive instead of freezing and
 going grey as the dead-reckoner gives up on it — and an arriving poll snaps them back to the
@@ -428,6 +462,12 @@ nothing at all until you notice the airport went past.
 which does not match this repo's licensing. aviationweather.gov is a US Government work and public
 domain. The test fixture in `snapshot.rs` is hand-written to the same shape rather than being a
 real extract.
+
+Weather is broadcast one product at a time and then **rebroadcast**, cycling round the list, which
+is what FIS-B ground stations actually do — it is why a real receiver accumulates weather over
+several minutes rather than getting it in one frame. Draining the list instead would leave any
+display started later showing `NO WEATHER RECEIVED YET` beside a perfectly healthy server, because
+`/weather` deliberately does not replay on connect.
 
 #### Fault injection
 

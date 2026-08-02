@@ -164,9 +164,28 @@ impl World {
         added
     }
 
-    /// The next unpublished weather product, if any.
+    /// The next weather product to broadcast, cycling round the list forever.
+    ///
+    /// Cycling, not draining. FIS-B ground stations **rebroadcast** their products on a repeating
+    /// schedule — that is the whole reason a real receiver accumulates weather over several
+    /// minutes rather than getting it all at once, and why the display says exactly that when it
+    /// has none yet.
+    ///
+    /// Publishing each product once was the obvious first implementation and it was wrong in a way
+    /// that only showed up later: `/weather` deliberately does not replay on connect, so once the
+    /// list was exhausted every *new* client got nothing at all, forever. A display started ten
+    /// minutes after the server sat on `NO WEATHER RECEIVED YET` with a healthy server beside it.
+    ///
+    /// Re-sending a report the display already holds is not waste. It refreshes the age, which is
+    /// what a rebroadcast does on the real system.
     pub fn next_weather(&mut self) -> Option<wire::WeatherMessage> {
-        let item = self.weather.get(self.weather_published)?.clone();
+        if self.weather.is_empty() {
+            return None;
+        }
+        if self.weather_published >= self.weather.len() {
+            self.weather_published = 0;
+        }
+        let item = self.weather[self.weather_published].clone();
         self.weather_published += 1;
         Some(item)
     }
@@ -328,7 +347,11 @@ mod tests {
     }
 
     #[test]
-    fn weather_is_published_one_product_at_a_time_then_runs_out() {
+    fn weather_is_published_one_at_a_time_and_then_rebroadcast() {
+        // One product per turn, because FIS-B is opportunistic and a display that receives the
+        // whole set in one frame never exercises the incremental path. Then round again, because
+        // ground stations rebroadcast — and because `/weather` does not replay on connect, so a
+        // list that drained would leave every later client with nothing at all.
         let items = vec![
             wire::WeatherMessage { Type: "METAR".into(), ..Default::default() },
             wire::WeatherMessage { Type: "TAF".into(), ..Default::default() },
@@ -336,7 +359,40 @@ mod tests {
         let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], items);
         assert_eq!(world.next_weather().map(|w| w.Type), Some("METAR".into()));
         assert_eq!(world.next_weather().map(|w| w.Type), Some("TAF".into()));
-        assert!(world.next_weather().is_none(), "must not loop the list forever");
+        assert_eq!(
+            world.next_weather().map(|w| w.Type),
+            Some("METAR".into()),
+            "the cycle must come round rather than drying up"
+        );
+    }
+
+    #[test]
+    fn an_empty_weather_list_never_publishes() {
+        // Cycling must not divide by zero or hand out a phantom report when there is nothing to
+        // say. This is the state on every cold start, before the first weather poll returns.
+        let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], vec![]);
+        assert!(world.next_weather().is_none());
+        assert!(world.next_weather().is_none());
+    }
+
+    #[test]
+    fn a_product_added_after_the_cycle_started_is_reached() {
+        // Weather merges in over time as polls return. A product appended after the index has
+        // passed its position must still get broadcast, or a station that came into range late
+        // would never be heard from.
+        let metar = |body: &str| wire::WeatherMessage {
+            Type: "METAR".into(),
+            Data: body.into(),
+            ..Default::default()
+        };
+        let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], vec![metar("A")]);
+        world.next_weather();
+        world.merge_weather(vec![metar("B")]);
+
+        let seen: Vec<String> = (0..4)
+            .filter_map(|_| world.next_weather().map(|w| w.Data))
+            .collect();
+        assert!(seen.contains(&"B".to_string()), "late arrival never broadcast: {seen:?}");
     }
 
     #[test]
