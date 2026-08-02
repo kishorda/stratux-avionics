@@ -258,7 +258,7 @@ device.
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-232 tests passing, clippy clean.
+250 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -289,6 +289,7 @@ crates/avionics-ui      Plan view, NEXRAD underlay, weather page, AHRS, projecti
 crates/avionics-input   evdev multitouch to gestures
 crates/avionics         The display binary
 tools/replay            record / synth / stats / play CLI
+tools/mock-stratux      a fake Stratux for desk testing, seeded from free public data
 deploy/                 install, hardening and on-hardware test harnesses
 ```
 
@@ -374,6 +375,58 @@ confirms the shipping build pulls in neither.
 `ContextApi::Gles(Some(2.0))` to match `vc4`, but EGL treats that as a *minimum* — Mesa returns
 "OpenGL ES 3.2" here, and the harness logs a warning saying so. Code that works in the window can
 still fail on the panel.
+
+### Testing against a mock Stratux
+
+`--replay` pushes `SourceEvent`s straight into the render loop, which is the right tool for what
+gets *drawn* — and it bypasses `stratux_client::live` entirely. The WebSocket handshake, the five
+independent reconnect loops, the per-stream staleness clocks, the structural dispatch on
+`/jsonio`, and the burst of traffic `/traffic` replays on connect had never run against anything
+but a real Pi.
+
+`tools/mock-stratux` closes that. It serves the Stratux wire protocol on the dev machine, seeded
+from a snapshot of **real** free public data — aircraft from adsb.lol, METARs and TAFs from
+aviationweather.gov. See [`docs/free-aviation-data.md`](docs/free-aviation-data.md) for the
+sources, their terms, and what was rejected.
+
+```sh
+# Once, with internet. Defaults to 50 nm around Morristown NJ — the outdoor capture site.
+./tools/mock-stratux/fetch-snapshot.sh --out /tmp/snapshot.json
+
+# Then offline, for as long as you like.
+cargo run --release -p mock-stratux -- --snapshot /tmp/snapshot.json
+
+# The display takes its ordinary live path; nothing about it knows this is a mock.
+cargo run --release --features desktop -p avionics -- --window --host 127.0.0.1 --port 8080
+```
+
+A snapshot of the New York metro area is 204 aircraft, 26 METARs, 10 TAFs and 4 PIREPs. Targets
+are flown forward along their reported track and speed, so the picture stays alive rather than
+freezing and going grey as the dead-reckoner gives up on it.
+
+**Snapshots are gitignored on purpose.** adsb.lol's data is ODbL — attribution and share-alike —
+which does not match this repo's licensing. aviationweather.gov is a US Government work and public
+domain. The test fixture in `snapshot.rs` is hand-written to the same shape rather than being a
+real extract.
+
+#### Fault injection
+
+The point of a mock is reaching the states hardware makes awkward:
+
+```sh
+--drop-every 4              # close every socket every 4 s, to exercise reconnect
+--stall situation           # accept the socket but never send: staleness clocks fire
+--garbage-every 400         # a malformed frame every 400th message
+--fly 090@110               # fly own-ship instead of sitting on the ground
+```
+
+`--stall situation` reproduces the first outdoor trip's failure in seconds: radios healthy at
+`1090 3304/m`, `GPS NO GPS`, `TFC 0 +204 held`, and the green line saying 204 targets are being
+received but cannot be plotted. That indication was built *because* of that trip, and until now
+there was no way to see it again without another one.
+
+It does not serve NEXRAD — no free service publishes FIS-B block structures. Use `replay synth`
+for the underlay, and for deterministic scenarios generally.
 
 ### Recordings
 

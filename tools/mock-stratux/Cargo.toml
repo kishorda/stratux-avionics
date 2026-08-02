@@ -1,0 +1,21 @@
+[package]
+name = "mock-stratux"
+description = "A fake Stratux for offline testing on the dev machine, seeded from free public data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+stratux-client = { path = "../../crates/stratux-client" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures-util = { workspace = true }
+# The same version the client uses, so there is one WebSocket implementation in the graph. This is
+# a dev tool and is never cross-compiled: `deploy.sh` builds `-p avionics`, so nothing here reaches
+# the aircraft. `cargo tree -p avionics` still shows the shipping build unchanged.
+tokio-tungstenite = { workspace = true }

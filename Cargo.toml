@@ -8,6 +8,7 @@ members = [
     "crates/avionics-ui",
     "crates/avionics",
     "tools/replay",
+    "tools/mock-stratux",
 ]
 
 [workspace.package]

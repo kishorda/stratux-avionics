@@ -21,3 +21,8 @@
 # Sessions pulled off the Pi by deploy/capture.sh. Real recordings from real trips —
 # large, and specific to one flight, so kept out of the repo but NOT out of the way.
 /captures
+
+# Snapshots fetched by tools/mock-stratux/fetch-snapshot.sh. They carry ODbL traffic data
+# from adsb.lol, which is a different licence from this repo, and they are re-fetchable in
+# seconds. See docs/free-aviation-data.md.
+snapshot*.json
