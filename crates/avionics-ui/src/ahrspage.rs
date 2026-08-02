@@ -116,9 +116,9 @@ pub fn draw(
     // The horizon runs the full width and the tapes sit translucently on top of it, exactly as
     // on the reference panel. Stopping it at the tape edge instead makes the tapes read as walls
     // boxing in a small picture, and wastes the widest part of an already small screen.
-    let horizon_left = 0.0;
-    let horizon_right = layout.content_width;
-    let cx = layout.content_width * 0.5;
+    let horizon_left = layout.content_x0;
+    let horizon_right = layout.content_x1;
+    let cx = layout.content_x0 + layout.content_width() * 0.5;
     // Leave a band at the bottom for the heading readout.
     let heading_band = ui.theme.font_size_large * 1.7;
     let cy = (top + bottom - heading_band) * 0.5;
@@ -148,9 +148,13 @@ pub fn draw(
     // when the attitude fails. Blanking them alongside the horizon would throw away good data
     // because a different sensor died.
     draw_tapes(ui, canvas, state, layout, top, bottom);
-    draw_g_load(ui, canvas, state, GS_TAPE_W + 8.0, top);
     draw_heading(ui, canvas, state, cx, bottom - heading_band, bottom);
-    draw_banner(ui, canvas, GS_TAPE_W + 8.0, bottom - heading_band - 5.0);
+    draw_banner(
+        ui,
+        canvas,
+        layout.content_x0 + GS_TAPE_W + 8.0,
+        bottom - heading_band - 5.0,
+    );
 
     decision
 }
@@ -171,7 +175,7 @@ fn draw_tapes(
         ui,
         canvas,
         &Tape {
-            x: 0.0,
+            x: layout.content_x0,
             width: GS_TAPE_W,
             top,
             bottom,
@@ -195,7 +199,7 @@ fn draw_tapes(
         ui,
         canvas,
         &Tape {
-            x: layout.content_width - ALT_TAPE_W - VSI_W,
+            x: layout.content_x1 - ALT_TAPE_W - VSI_W,
             width: ALT_TAPE_W,
             top,
             bottom,
@@ -213,7 +217,7 @@ fn draw_tapes(
         ui,
         canvas,
         &Vsi {
-            x: layout.content_width - VSI_W,
+            x: layout.content_x1 - VSI_W,
             width: VSI_W,
             top,
             bottom,
@@ -243,14 +247,9 @@ fn draw_heading(ui: &Ui, canvas: &mut Canvas, state: &AppState, cx: f32, top: f3
     value.set_text_baseline(Baseline::Middle);
     let _ = canvas.fill_text(cx, cy, source.text(), &value);
 
-    // The caption is what stops GPS track being read as heading. See `HeadingSource`.
-    let mut caption = Paint::color(theme.text_dim);
-    caption.set_font(&[ui.font()]);
-    caption.set_font_size(theme.font_size_tag);
-    caption.set_text_align(Align::Center);
-    caption.set_text_baseline(Baseline::Middle);
-    caption.set_text_baseline(Baseline::Top);
-    let _ = canvas.fill_text(cx, cy + h * 0.5 + 1.0, source.caption(), &caption);
+    // The caption that named the source used to sit just below this box, which put it inside the
+    // footer band and underneath the footer bar. It now has a field of its own in that bar, still
+    // attached to the same number. See `footerbar::ahrs`.
 }
 
 /// Blue-over-brown filling the attitude area, translated for pitch and rotated for roll.
@@ -539,14 +538,14 @@ enum AltSource {
 ///   plain lie, and the wind is exactly when someone would be looking.
 ///
 /// On the target both AHRS heading fields read the 3276.7 sentinel, so `Track` is the live case.
-enum HeadingSource {
+pub(crate) enum HeadingSource {
     Mag(f64),
     Gyro(f64),
     Track(f64),
     None,
 }
 
-fn heading_source(state: &AppState) -> HeadingSource {
+pub(crate) fn heading_source(state: &AppState) -> HeadingSource {
     let ahrs = &state.ownship.ahrs;
     if let Some(v) = ahrs.mag_heading_deg {
         HeadingSource::Mag(v)
@@ -560,7 +559,7 @@ fn heading_source(state: &AppState) -> HeadingSource {
 }
 
 impl HeadingSource {
-    fn caption(&self) -> &'static str {
+    pub(crate) fn caption(&self) -> &'static str {
         match self {
             Self::Mag(_) => "HDG mag",
             Self::Gyro(_) => "HDG gyro",
@@ -569,7 +568,7 @@ impl HeadingSource {
         }
     }
 
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         match self {
             Self::Mag(v) | Self::Gyro(v) | Self::Track(v) => {
                 format!("{:03.0}\u{00B0}", v.rem_euclid(360.0))
@@ -588,36 +587,6 @@ fn altitude_source(state: &AppState) -> AltSource {
         (None, Some(gps)) => AltSource::Gps(gps),
         (None, None) => AltSource::None,
     }
-}
-
-/// G-load, top-left of the attitude area.
-///
-/// Pitch and roll are deliberately not printed: the horizon exists to show them, and a number
-/// beside a picture of the same thing is duplication that costs a glance. G-load has no other
-/// representation on the page, so it gets one.
-fn draw_g_load(ui: &Ui, canvas: &mut Canvas, state: &AppState, x: f32, top: f32) {
-    let theme = &ui.theme;
-    let y = top + theme.font_size_small * 1.2;
-
-    let mut label = Paint::color(theme.text_dim);
-    label.set_font(&[ui.font()]);
-    label.set_font_size(theme.font_size_tag);
-    label.set_text_baseline(Baseline::Middle);
-    label.set_text_align(Align::Left);
-    let _ = canvas.fill_text(x, y, "G", &label);
-
-    let mut value = Paint::color(theme.text_primary);
-    value.set_font(&[ui.font()]);
-    value.set_font_size(theme.font_size_small);
-    value.set_text_baseline(Baseline::Middle);
-    value.set_text_align(Align::Left);
-    let text = state
-        .ownship
-        .ahrs
-        .g_load
-        .map(|g| format!("{g:.2}"))
-        .unwrap_or_else(|| "---".into());
-    let _ = canvas.fill_text(x + 12.0, y, &text, &value);
 }
 
 /// The standing reminder that this is not a primary instrument.

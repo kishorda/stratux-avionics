@@ -1,9 +1,13 @@
-//! The soft-key strip down the right-hand edge.
+//! The function-key strip down the **left-hand** edge.
 //!
-//! Five slots. The top one is **always** PAGE; the four below it change meaning with the page,
-//! Garmin-style. That split is the whole design: page switching is the one action you need to be
-//! able to perform without reading the screen, so it never moves, while the remaining keys are
-//! free to be useful per page.
+//! Six slots, all page-specific. Page selection is not here — it lives on the opposite edge, in
+//! [`crate::pagestrip`], where all three pages are visible at once and the active one is filled.
+//! Splitting the two was what made room to grow: every slot on this strip is now available to the
+//! page that is showing, rather than one of six being permanently spent on navigation.
+//!
+//! On the 800x480 panel six slots are 75.8 px tall, which is why six and not more: seven would be
+//! 65.0 px and eight 56.9 px, and the latter is below the floor that
+//! `strip_is_wide_enough_to_hit_on_the_target_panel` holds the design to.
 //!
 //! # The hazard this design carries
 //!
@@ -11,7 +15,8 @@
 //! on screen. In turbulence that is a real way to press the wrong thing. Three mitigations,
 //! all deliberate:
 //!
-//! * PAGE never moves, so recovering from a wrong page is always the same key.
+//! * Navigation is never on this strip, so nothing here can move you off the page you are on.
+//!   Recovering from a wrong press is always a press on the other edge.
 //! * Every key is **labelled with its current action**, and the label is redrawn every frame —
 //!   never a fixed legend that can disagree with what the key does.
 //! * Unused slots are drawn dimmed and inert rather than left blank. A blank strip region reads
@@ -26,22 +31,19 @@ use avionics_gfx::Canvas;
 use crate::{Layout, Page, Ui, ViewState};
 
 /// Number of key slots in the strip, counted from the top.
-pub const SLOTS: usize = 5;
-
-/// The slot that carries PAGE on every page. Never changes.
-pub const PAGE_SLOT: usize = 0;
+pub const SLOTS: usize = 6;
 
 /// What a soft key does when pressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoftKey {
-    /// Advance to the next page. Present in [`PAGE_SLOT`] on every page.
-    Page,
     RangeUp,
     RangeDown,
     /// North-up / track-up.
     ToggleOrientation,
     /// NEXRAD precipitation underlay on the plan view.
     ToggleUnderlay,
+    /// Step the vertical filter through its bands. The altitude equivalent of RangeUp.
+    CycleAltitudeFilter,
     ScrollUp,
     ScrollDown,
     /// Tell the AHRS the aircraft is straight and level. Two presses: arm, then confirm.
@@ -56,30 +58,29 @@ pub enum SoftKey {
 /// so a key never changes position just because a neighbour became unavailable.
 pub fn keys_for(page: Page) -> [Option<SoftKey>; SLOTS] {
     match page {
+        // RNG and ALT sit together: they are the same idea on two axes, horizontal and vertical,
+        // and the pilot reaching for "show me less" should find both without hunting. Freeing the
+        // top slot from PAGE is what allowed them to be adjacent.
         Page::PlanView => [
-            Some(SoftKey::Page),
             Some(SoftKey::RangeUp),
             Some(SoftKey::RangeDown),
+            Some(SoftKey::CycleAltitudeFilter),
             Some(SoftKey::ToggleOrientation),
             Some(SoftKey::ToggleUnderlay),
+            None,
         ],
         Page::Weather => [
-            Some(SoftKey::Page),
             Some(SoftKey::ScrollUp),
             Some(SoftKey::ScrollDown),
             Some(SoftKey::ToggleDecode),
             None,
+            None,
+            None,
         ],
-        // LEVEL sits in slot 4, the bottom of the strip, deliberately as far as possible from
-        // PAGE at the top: those are the only two live keys here, and the one that re-references
-        // the attitude sensor should not be adjacent to the one used constantly.
-        Page::Ahrs => [
-            Some(SoftKey::Page),
-            None,
-            None,
-            None,
-            Some(SoftKey::CageAhrs),
-        ],
+        // LEVEL sits at the bottom of the strip, the furthest point on it from where a hand rests
+        // reaching for anything else. It is the only key on this display that changes what an
+        // instrument reads rather than how it is drawn, and it should take a deliberate reach.
+        Page::Ahrs => [None, None, None, None, None, Some(SoftKey::CageAhrs)],
     }
 }
 
@@ -96,7 +97,6 @@ pub fn key_at(view: &ViewState, slot: usize) -> Option<SoftKey> {
 /// footer, which also reports current state.
 pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
     match key {
-        SoftKey::Page => "PAGE",
         SoftKey::RangeUp => "RNG +",
         SoftKey::RangeDown => "RNG -",
         SoftKey::ToggleOrientation => view.orientation.label(),
@@ -107,6 +107,9 @@ pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
                 "WX OFF"
             }
         }
+        // Shares its text with the footer readout, so the key and the page can never disagree
+        // about which band is selected.
+        SoftKey::CycleAltitudeFilter => view.altitude_filter.label(),
         SoftKey::ScrollUp => "UP",
         SoftKey::ScrollDown => "DOWN",
         // Labelled with what pressing it gives you, unlike the state-labelled toggles above:
@@ -133,30 +136,36 @@ pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
 ///
 /// The strip runs from the top of the screen to the top of the footer, so the first slot sits
 /// alongside the status bar. The footer stays full width: it is a readout, not a control, and
-/// stopping it short of the strip would waste the one line that reports selected range.
+/// stopping it short of either strip would waste the one line that reports selected range.
 pub fn slot_rect(layout: &Layout, slot: usize) -> (f32, f32, f32, f32) {
-    let x = layout.content_width;
-    let strip_height = (layout.height - layout.footer_height).max(1.0);
-    let h = strip_height / SLOTS as f32;
-    (x, h * slot as f32, layout.strip_width, h)
+    let h = layout.strip_height() / SLOTS as f32;
+    (0.0, layout.strip_y0() + h * slot as f32, layout.strip_width, h)
 }
 
 /// Which slot a point falls in, or `None` if it is outside the strip.
 pub fn hit(layout: &Layout, x: f32, y: f32) -> Option<usize> {
-    if x < layout.content_width {
+    if x >= layout.content_x0 {
         return None;
     }
-    let strip_height = (layout.height - layout.footer_height).max(1.0);
-    if y < 0.0 || y >= strip_height {
+    // Both bars belong to themselves. The strip used to run the full height and take the top slot
+    // out of the status bar's row; now it starts below it, so a press in either bar is not a key.
+    if y < layout.strip_y0() || y >= layout.strip_y1() {
         return None;
     }
-    let h = strip_height / SLOTS as f32;
-    let slot = (y / h) as usize;
+    let h = layout.strip_height() / SLOTS as f32;
+    let slot = ((y - layout.strip_y0()) / h) as usize;
     // Guard the bottom edge: `y` exactly at `strip_height` would index one past the end.
     Some(slot.min(SLOTS - 1))
 }
 
-pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState) {
+/// Draw the strip.
+///
+/// `stats` is the frame that has just been drawn, and is used for exactly one thing: colouring the
+/// ALT key by whether the filter is *currently withholding traffic*, rather than by whether a
+/// filter is merely selected. The default band is a narrowing one, so "amber whenever a filter is
+/// set" would light the key on every flight from power-on and mean nothing by the time it did
+/// matter.
+pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState, stats: &crate::FrameStats) {
     let layout = ui.layout(canvas);
     let theme = &ui.theme;
     let keys = keys_for(view.page);
@@ -165,16 +174,16 @@ pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState) {
     // picture behind it.
     let mut background = Path::new();
     background.rect(
-        layout.content_width,
         0.0,
+        layout.strip_y0(),
         layout.strip_width,
-        layout.height - layout.footer_height,
+        layout.strip_height(),
     );
     canvas.fill_path(&background, &Paint::color(theme.bar_background));
 
     let mut edge = Path::new();
-    edge.move_to(layout.content_width, 0.0);
-    edge.line_to(layout.content_width, layout.height - layout.footer_height);
+    edge.move_to(layout.content_x0, layout.strip_y0());
+    edge.line_to(layout.content_x0, layout.strip_y1());
     canvas.stroke_path(&edge, &Paint::color(theme.text_dim).with_line_width(1.0));
 
     // All four dividers in one path and one draw: they share a colour and a width, and each
@@ -199,6 +208,8 @@ pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState) {
         // useful at a glance, and the label still carries the authoritative answer.
         let colour = match key {
             SoftKey::ToggleUnderlay if view.show_weather_underlay => theme.good,
+            // Amber only while traffic is actually being held back by it. See `draw`.
+            SoftKey::CycleAltitudeFilter if stats.targets_outside_altitude > 0 => theme.caution,
             // An armed cage is amber: it is one press from changing the attitude reference, and
             // that state must not look like every other key on the strip.
             SoftKey::ToggleDecode if view.weather_decode => theme.good,
@@ -230,24 +241,52 @@ mod tests {
     }
 
     #[test]
-    fn page_key_is_in_the_same_slot_on_every_page() {
-        for page in [Page::PlanView, Page::Weather, Page::Ahrs] {
-            assert_eq!(keys_for(page)[PAGE_SLOT], Some(SoftKey::Page));
+    fn navigation_is_never_on_this_strip() {
+        // The property that replaced "PAGE is always in slot 0". Page selection lives on the
+        // opposite edge, and nothing here may move the pilot off the page they are on — so a
+        // mispress on the function strip is always recoverable without hunting for where PAGE
+        // went on the page you landed on.
+        for page in Page::ALL {
+            for key in keys_for(page).into_iter().flatten() {
+                assert!(
+                    !matches!(key, SoftKey::ScrollUp | SoftKey::ScrollDown) || page == Page::Weather,
+                    "{key:?} does not belong on {page:?}"
+                );
+            }
         }
+        // And every page's keys are drawn from its own page's set, never another's.
+        assert!(keys_for(Page::Ahrs)
+            .into_iter()
+            .flatten()
+            .all(|k| k == SoftKey::CageAhrs));
     }
 
     #[test]
-    fn taps_left_of_the_strip_are_not_key_presses() {
+    fn taps_right_of_the_strip_are_not_key_presses() {
+        // The strip is on the left now, so everything from the content area rightwards belongs to
+        // the page or to the page strip. The old version of this test asserted the mirror image
+        // and would have passed unchanged against a strip that had not moved at all.
         let l = layout();
-        assert_eq!(hit(&l, l.content_width - 1.0, 100.0), None);
-        assert_eq!(hit(&l, 0.0, 100.0), None);
+        assert_eq!(hit(&l, l.content_x0, 100.0), None, "content area");
+        assert_eq!(hit(&l, l.content_x1 + 5.0, 100.0), None, "page strip");
+        assert_eq!(hit(&l, l.width - 1.0, 100.0), None);
+        assert_eq!(hit(&l, l.content_x0 - 1.0, 100.0), Some(1), "inside the strip");
     }
 
     #[test]
-    fn taps_in_the_footer_are_not_key_presses() {
+    fn neither_bar_belongs_to_this_strip() {
+        // The strip runs between the two bars, not the full height of the panel. Both ends are
+        // pinned: a press in the status bar or the footer bar is not a key press, even though it
+        // is inside the strip's columns.
         let l = layout();
-        let below_strip = l.height - l.footer_height + 1.0;
-        assert_eq!(hit(&l, l.content_width + 5.0, below_strip), None);
+        let x = l.strip_width * 0.5;
+        assert_eq!(hit(&l, x, 0.0), None, "top of the status bar");
+        assert_eq!(hit(&l, x, l.status_bar_height - 0.001), None, "status bar");
+        assert_eq!(hit(&l, x, l.footer_y0()), None, "top of the footer bar");
+        assert_eq!(hit(&l, x, l.height - 1.0), None, "footer bar");
+
+        assert_eq!(hit(&l, x, l.strip_y0()), Some(0), "first pixel below the bar is slot 0");
+        assert_eq!(hit(&l, x, l.strip_y1() - 0.001), Some(SLOTS - 1));
     }
 
     #[test]
@@ -267,20 +306,19 @@ mod tests {
     #[test]
     fn the_bottom_edge_does_not_index_past_the_last_slot() {
         let l = layout();
-        let strip_height = l.height - l.footer_height;
-        assert_eq!(hit(&l, l.content_width + 1.0, strip_height - 0.001), Some(SLOTS - 1));
+        assert_eq!(hit(&l, l.strip_width * 0.5, l.strip_y1() - 0.001), Some(SLOTS - 1));
     }
 
     #[test]
     fn slots_tile_the_strip_without_gaps() {
         let l = layout();
-        let mut expected_y = 0.0;
+        let mut expected_y = l.strip_y0();
         for slot in 0..SLOTS {
             let (_, y, _, h) = slot_rect(&l, slot);
             assert!((y - expected_y).abs() < 0.001, "slot {slot} starts at a gap");
             expected_y += h;
         }
-        assert!((expected_y - (l.height - l.footer_height)).abs() < 0.001);
+        assert!((expected_y - l.strip_y1()).abs() < 0.001);
     }
 
     #[test]
@@ -301,15 +339,14 @@ mod tests {
     }
 
     #[test]
-    fn the_attitude_page_offers_page_and_level_only() {
+    fn the_attitude_page_offers_level_only() {
         let keys = keys_for(Page::Ahrs);
-        assert_eq!(keys[PAGE_SLOT], Some(SoftKey::Page));
-        assert_eq!(keys[4], Some(SoftKey::CageAhrs));
-        // LEVEL is at the far end of the strip from PAGE on purpose: those are the only two live
-        // keys here, and the one that re-references the attitude sensor should not sit next to
-        // the one used constantly.
+        // LEVEL sits in the last slot, the furthest point on the strip from where a hand rests
+        // reaching for anything else. Asserted as "the last slot" rather than as a number, so
+        // growing the strip moves it instead of stranding it in the middle.
+        assert_eq!(keys[SLOTS - 1], Some(SoftKey::CageAhrs));
         assert!(
-            keys[1..4].iter().all(Option::is_none),
+            keys[..SLOTS - 1].iter().all(Option::is_none),
             "nothing else on this page is adjustable"
         );
     }
@@ -317,10 +354,45 @@ mod tests {
     #[test]
     fn the_weather_page_offers_scrolling_and_decoding() {
         let keys = keys_for(Page::Weather);
-        assert_eq!(keys[PAGE_SLOT], Some(SoftKey::Page));
-        assert_eq!(keys[1], Some(SoftKey::ScrollUp));
-        assert_eq!(keys[2], Some(SoftKey::ScrollDown));
-        assert_eq!(keys[3], Some(SoftKey::ToggleDecode));
-        assert_eq!(keys[4], None, "nothing invented to fill the last slot");
+        assert_eq!(keys[0], Some(SoftKey::ScrollUp));
+        assert_eq!(keys[1], Some(SoftKey::ScrollDown));
+        assert_eq!(keys[2], Some(SoftKey::ToggleDecode));
+        assert!(
+            keys[3..].iter().all(Option::is_none),
+            "nothing invented to fill the spare slots"
+        );
+    }
+
+    #[test]
+    fn the_plan_view_keeps_every_key_it_had_when_the_strip_grew() {
+        // The sixth slot was added for ALT, and the point of adding one rather than reusing one
+        // was that nothing already on the strip moved. If a later change shuffles these, it should
+        // have to say so here.
+        let keys = keys_for(Page::PlanView);
+        assert_eq!(
+            keys,
+            [
+                Some(SoftKey::RangeUp),
+                Some(SoftKey::RangeDown),
+                Some(SoftKey::CycleAltitudeFilter),
+                Some(SoftKey::ToggleOrientation),
+                Some(SoftKey::ToggleUnderlay),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_altitude_key_reports_the_band_it_is_in() {
+        // Same rule as the orientation key: a toggle is labelled with where you are, not where
+        // pressing it would take you.
+        let mut view = ViewState::default();
+        for _ in 0..crate::AltitudeFilter::ALL.len() {
+            assert_eq!(
+                label(SoftKey::CycleAltitudeFilter, &view),
+                view.altitude_filter.label()
+            );
+            view.cycle_altitude_filter();
+        }
     }
 }

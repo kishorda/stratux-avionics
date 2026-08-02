@@ -12,6 +12,7 @@ use crate::reckon::{reckon, reckon_ownship, Reckoned};
 use crate::symbols;
 use crate::theme::faded;
 use crate::threat::{assess, format_relative_altitude, Assessment, ThreatLevel};
+use stratux_client::domain::LatLon;
 use crate::{FrameStats, Layout, Ui, ViewState};
 
 /// One target resolved to screen coordinates, ready to draw.
@@ -20,6 +21,43 @@ struct Plotted<'a> {
     reckoned: Reckoned,
     assessment: Assessment,
     screen: (f32, f32),
+}
+
+/// What the two culls decided about one target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Admission {
+    /// Draw it, with this assessment.
+    Draw(Assessment),
+    /// Beyond the selected range ring.
+    OutsideRange,
+    /// Inside the ring, but outside the selected altitude band.
+    OutsideAltitude,
+}
+
+/// Decide whether a target reaches the screen, and why not if it does not.
+///
+/// Pure, and free of [`Ui`] and [`Canvas`], so the *order* of the two culls is testable without a
+/// GPU. That order is a decision and not an accident: range is tested first, so a target outside
+/// both is reported as out of range only. The alternative — counting it in both — would make the
+/// status bar's two numbers sum to more than the traffic actually being withheld, and each one
+/// individually overstate what pressing its key would bring back.
+pub fn admit(
+    target: &Target,
+    position: LatLon,
+    projection: &Projection,
+    view: &ViewState,
+    own_altitude_ft: Option<f32>,
+    threat: &crate::ThreatConfig,
+) -> Admission {
+    let (range_nm, _) = projection.range_bearing(position);
+    if range_nm > view.range_nm {
+        return Admission::OutsideRange;
+    }
+    let assessment = assess(target, range_nm, own_altitude_ft, threat);
+    if !view.altitude_filter.admits(&assessment) {
+        return Admission::OutsideAltitude;
+    }
+    Admission::Draw(assessment)
 }
 
 /// Build the projection for this frame, or `None` when there is no usable own-ship position.
@@ -75,9 +113,6 @@ pub fn draw(
         stats.targets_unplotted = unplotted_count(state, now, &ui.reckon);
         let _ = draw_rings(ui, canvas, view, layout, None);
         draw_no_position_notice(ui, canvas, state, layout, stats.targets_unplotted);
-        // Draw the footer here too, so the layout stays intact and the selected range is still
-        // visible. A screen that loses a whole row of chrome looks broken rather than degraded.
-        draw_footer(ui, canvas, layout, state, view);
         return stats;
     };
 
@@ -91,12 +126,27 @@ pub fn draw(
         let Some(reckoned) = reckon(target, now, &ui.reckon) else {
             continue;
         };
-        let (range_nm, _) = projection.range_bearing(reckoned.position);
-        if range_nm > view.range_nm {
-            stats.targets_outside_range += 1;
-            continue;
-        }
-        let assessment = assess(target, range_nm, own_altitude, &ui.threat);
+        // The two culls, in `admit` so their order and their counting are testable without a
+        // canvas. The vertical one is the only place on this display where a target that was
+        // received, positioned and inside the selected range is deliberately not drawn.
+        let assessment = match admit(
+            target,
+            reckoned.position,
+            &projection,
+            view,
+            own_altitude,
+            &ui.threat,
+        ) {
+            Admission::Draw(assessment) => assessment,
+            Admission::OutsideRange => {
+                stats.targets_outside_range += 1;
+                continue;
+            }
+            Admission::OutsideAltitude => {
+                stats.targets_outside_altitude += 1;
+                continue;
+            }
+        };
         plotted.push(Plotted {
             target,
             reckoned,
@@ -129,8 +179,6 @@ pub fn draw(
     // worse than one readable label and one bare symbol.
     plotted.reverse();
     stats.tags_suppressed = draw_tags(ui, canvas, layout, &plotted, ring_chrome);
-
-    draw_footer(ui, canvas, layout, state, view);
 
     stats
 }
@@ -479,13 +527,19 @@ fn draw_tags(
             x1: layout.width,
             y1: layout.height,
         },
-        // The soft-key strip. Reserved like any other chrome: it is drawn after the plan view,
-        // so a tag placed under it is not clipped, it is silently covered — the symbol stays
-        // visible while its label vanishes, which is the most confusing possible outcome.
+        // Both strips. Reserved like any other chrome: they are drawn after the plan view, so a
+        // tag placed under one is not clipped, it is silently covered — the symbol stays visible
+        // while its label vanishes, which is the most confusing possible outcome.
         Rect {
-            x0: layout.content_width,
+            x0: layout.content_x1,
             y0: 0.0,
             x1: layout.width,
+            y1: layout.height,
+        },
+        Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: layout.content_x0,
             y1: layout.height,
         },
     ];
@@ -515,7 +569,7 @@ fn draw_tags(
         // Candidates: (anchor x, alignment, vertical offset).
         let right = (x + gap, Align::Left);
         let left = (x - gap - width, Align::Right);
-        let prefer_left = x > layout.content_width * 0.62;
+        let prefer_left = x > layout.content_x0 + layout.content_width() * 0.62;
         let sides = if prefer_left { [left, right] } else { [right, left] };
 
         let mut placed = None;
@@ -534,7 +588,7 @@ fn draw_tags(
                 .shifted(0.0, dy);
 
                 // Off the panel edge is as bad as a collision.
-                if candidate.x0 < layout.margin || candidate.x1 > layout.content_width - layout.margin {
+                if candidate.x0 < layout.content_left() || candidate.x1 > layout.content_right() {
                     continue;
                 }
                 if occupied.iter().any(|r| r.overlaps(&candidate)) {
@@ -654,58 +708,6 @@ fn vertical_trend(vertical_speed_fpm: Option<i16>) -> &'static str {
         Some(v) if v <= -THRESHOLD_FPM => " \u{2193}",
         _ => "",
     }
-}
-
-/// Own-ship track and ground speed, bottom right; range and orientation, bottom left.
-fn draw_footer(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    layout: &Layout,
-    state: &AppState,
-    view: &ViewState,
-) {
-    let theme = &ui.theme;
-    let baseline = layout.height - layout.footer_height * 0.35;
-
-    let mut value = Paint::color(theme.text_primary);
-    value.set_font(&[ui.font()]);
-    value.set_font_size(theme.font_size_normal);
-    value.set_text_baseline(Baseline::Alphabetic);
-    value.set_text_align(Align::Right);
-
-    let track = state
-        .ownship
-        .track_deg
-        .map(|t| format!("{:03.0}\u{00B0}", t.rem_euclid(360.0)))
-        .unwrap_or_else(|| "---\u{00B0}".into());
-    let speed = state
-        .ownship
-        .ground_speed_kt
-        .map(|s| format!("{s:.0}"))
-        .unwrap_or_else(|| "--".into());
-
-    let _ = canvas.fill_text(
-        layout.width - layout.margin,
-        baseline,
-        format!("TRK {track}   GS {speed} kt"),
-        &value,
-    );
-
-    let mut selection = Paint::color(theme.text_secondary);
-    selection.set_font(&[ui.font()]);
-    selection.set_font_size(theme.font_size_small);
-    selection.set_text_baseline(Baseline::Alphabetic);
-    selection.set_text_align(Align::Left);
-    let _ = canvas.fill_text(
-        layout.margin,
-        baseline,
-        format!(
-            "{} nm   {}",
-            format_range(view.range_nm),
-            view.orientation.label()
-        ),
-        &selection,
-    );
 }
 
 /// Shown in place of traffic when there is no own-ship position to plot against.

@@ -30,7 +30,8 @@ re-implement any of it.
 
 ## The panel
 
-800x480, five soft keys down the right-hand edge, three pages. Every image below is a real
+800x480. Two bars run edge to edge, top and bottom, with two key strips between them — functions
+down the left edge, page selection down the right — and three pages. Every image below is a real
 frame rendered by the shipping code; see [regenerating these](#regenerating-the-screenshots).
 
 ### Traffic plan view
@@ -42,18 +43,42 @@ callsign and relative altitude in hundreds of feet with a climb/descend arrow. T
 is a conflict — co-altitude and closing. Underneath is the FIS-B NEXRAD precipitation mosaic,
 drawn as one texture rather than ten thousand paths.
 
-The status bar answers "is this thing actually working?": GPS fix and satellite count, the
+The **top bar** answers "is this thing actually working?": GPS fix and satellite count, the
 per-radio message rate for 1090 and 978, traffic counts including targets culled or held back,
-CPU temperature, and the age of the weather.
+CPU temperature, the age of the weather, and — right-aligned — whatever is currently wrong.
+
+The **bottom bar** answers "what have I selected, and what am I doing?": range, orientation and
+altitude band on the left, own-ship track and ground speed on the right. Both bars span the whole
+panel and the strips sit between them, so the frame reads as two bars with a working area between
+rather than as three columns with text loose at the bottom.
+
+### The two culls
+
+`RNG` selects how far out to look; `ALT` selects how far up and down. Above is the default
+`ALT NRM` band, ±2700 ft — `TFC 4 +5 out +2 alt` says four targets drawn, five beyond the ring,
+two outside the band. Below is the same scene with `ALT ALL`, and the two aircraft at +36 and
++33 are back:
+
+![The same scene with the vertical filter opened up to unrestricted](docs/images/plan-view-unfiltered.png)
+
+The counts always partition: `drawn + out + alt` is the same number whichever band is selected.
+Both the key and the footer readout turn amber only while the filter is *actually* withholding
+something, which is why they are amber in the first image and not the second. See
+[the vertical filter](#the-vertical-filter) for what it will and will not hide.
 
 ### The same page, on real data
 
 ![Plan view replaying the first outdoor capture, plotting a real airliner](docs/images/plan-view-live.png)
 
-The first real-world capture, replayed: a genuine 3D GPS fix (`GPS 3D/10`) and a real ADS-B
+The first real-world capture, replayed: a genuine 3D GPS fix (`GPS 3D/13`) and a real ADS-B
 target — `RPA3412 +107 ↑`, Republic Airways, 10,700 ft above and climbing. `978 0/m` in red and
 `NO weather` are correct and expected on the ground; FIS-B is line-of-sight from ground stations
 aimed at aircraft.
+
+Note `ALT ALL`. At 10,700 ft above, this target is outside the default `ALT NRM` band — under the
+default the same frame reads `TFC 0 +1 alt` with an empty ring and an amber `ALT NRM`, which is a
+fair illustration of what the vertical filter does on the ground, where everything you hear is
+far overhead.
 
 ### Weather text
 
@@ -85,27 +110,53 @@ certified IMU here; the attitude comes from a hobby sensor and GPS-derived track
 
 ### Controls
 
-The soft-key strip is the primary interface. Labels are redrawn every frame and toggles are
+The key strips are the primary interface. Labels are redrawn every frame and toggles are
 labelled with the state they are **currently in**, not the state they would move to.
+
+There are two strips, one down each edge. The **left** strip is page-specific function keys; the
+**right** strip is the page selector, with every page listed and the active one filled.
 
 | Slot | Plan view | Weather | AHRS |
 | --- | --- | --- | --- |
-| 1 | `PAGE` | `PAGE` | `PAGE` |
-| 2 | `RNG +` | `UP` | — |
-| 3 | `RNG -` | `DOWN` | — |
-| 4 | `N-UP` / `TRK-UP` | `DECODE` / `RAW` | — |
-| 5 | `WX ON` / `WX OFF` | — | `LEVEL` |
+| 1 | `RNG +` | `UP` | — |
+| 2 | `RNG -` | `DOWN` | — |
+| 3 | `ALT NRM/ABV/BLW/ALL` | `DECODE` / `RAW` | — |
+| 4 | `N-UP` / `TRK-UP` | — | — |
+| 5 | `WX ON` / `WX OFF` | — | — |
+| 6 | — | — | `LEVEL` |
+
+Splitting navigation onto its own edge is what made room to grow: every slot on the left is now
+available to the page that is showing, rather than one being permanently spent on a `PAGE` key.
+It also means **nothing on the function strip can move you off the page you are on** — recovering
+from a mispress is always a press on the opposite edge.
+
+Direct page selection replaced a cycling `PAGE` key. Every page is one press from every other
+rather than up to two, and pressing the key for the page you are already on does nothing — with a
+cycle, a press when you were unsure which page you were on was a guess.
+
+The second strip cost **no ring radius at all**. The plan view is height-bound on this panel: it
+needs 426 px of width and has 608, so width only begins to bind once the two strips together take
+more than 374 px. `outer_radius` is 187.5 px either way.
+
+Nor did it cost the status bar, which runs the full 800 px above both strips. The old `PAGE TFC`
+field is gone all the same — the filled page key says the same thing more legibly.
+
+Slot heights, for anyone adding a key: the strips span the 426.2 px between the two bars, so six
+left slots are 71.0 px. Seven would be 60.9 px, which still clears the 60 px floor the tests hold
+the design to, and eight would be 53.3 px, which does not.
 
 | Gesture | Effect |
 | --- | --- |
-| Tap the status bar | next page (a second, very large target for the same action) |
 | Tap the body, weather page | page the list — lower half forward, upper half back |
 | Tap the body, plan view / AHRS | **nothing, on purpose** |
+| Tap the status bar | **nothing, on purpose** |
 | Two-finger tap | north-up ↔ track-up |
 
-The body of the plan view used to cycle the range ring. It no longer does: a hand steadying
-itself against the panel in turbulence would silently change the range scale. Since there is a
-dedicated `RNG` key, the body is inert.
+Two things that used to react no longer do, for the same reason each time: in turbulence a hand
+finds the panel, and a display that changes underneath it is worse than one that ignores it. The
+plan-view body used to cycle the range ring, until `RNG` existed. The status bar used to cycle
+pages, until the page strip did — three 151 px keys need no fallback, and the old behaviour made
+the entire top edge of the panel a page-change target.
 
 ### Regenerating the screenshots
 
@@ -118,6 +169,8 @@ cargo build --release -p avionics -p replay
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/plan --frames 400 --dump-every 80 --range 10
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
+    --out /tmp/shots/plan-all --frames 400 --dump-every 80 --range 10 --alt-filter all
+./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/wx   --frames 400 --dump-every 80 --weather-page
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/wxd  --frames 400 --dump-every 80 --weather-page --decode
@@ -126,7 +179,8 @@ cargo build --release -p avionics -p replay
 
 # and the live one, from the recorded outdoor session:
 ./target/release/avionics --replay captures/2026-08-02-outdoor-gps-3d-fix/session.jsonl \
-    --speed 60 --offscreen --out /tmp/shots/live --frames 900 --dump-every 60 --range 40
+    --speed 60 --offscreen --out /tmp/shots/live --frames 800 --dump-every 100 --range 40 \
+    --alt-filter all
 ```
 
 Output is PPM; convert with any of `pnmtopng`, ImageMagick, or Pillow.
@@ -204,7 +258,7 @@ device.
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-203 tests passing, clippy clean.
+232 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -308,7 +362,8 @@ Two rules that came out of the same incident:
 `--window` opens a real window via winit/glutin and runs the identical render loop. Left click is
 a tap, right click is a two-finger tap, both funnelled into the **same** `avionics_ui::interact`
 calls the touchscreen uses — so it exercises the real interaction code, not a parallel
-implementation. Keyboard shortcuts (`r`/`R` range, `o` orientation, `p` page, `w` underlay, `esc`
+implementation. Keyboard shortcuts (`r`/`R` range, `a` altitude band, `o` orientation, `p` page,
+`w` underlay, `esc`
 quit) exist because clicking into a specific state is tedious when iterating on drawing code.
 
 It needs `--features desktop`, deliberately **not** in the default set: winit and glutin have no
@@ -562,6 +617,11 @@ end of `overlay.sh` for when it is genuinely needed.
   shows `NO ALT REF` when this applies.
 - **Targets beyond the selected range are culled, not drawn at the edge.** The count appears in the
   status bar as `+N out`, so a quiet sky is distinguishable from a small range ring.
+- **The display comes up filtering.** `ALT NRM` is the default band, so traffic more than 2700 ft
+  above or below is not drawn until you press `ALT`. The count is always in the status bar as
+  `+N alt` and the band is always named in the footer, but it is a filter, and it is on from
+  power-on. Nothing the threat tiers flagged is ever hidden by it — see
+  [the vertical filter](#the-vertical-filter).
 - **Traffic held for want of an own-ship position appears as `+N held`.** `TFC 0` next to a working
   receiver is the exact reading that sent a real outdoor test looking for an antenna fault when the
   GPS was the thing that had failed.
@@ -766,6 +826,42 @@ A blank screen, missing text, or unfilled rings **is** a failure. Before rewriti
 `mesa-utils`. If femtovg's ES2 path is genuinely broken on `vc4`, Slint's `linuxkms` backend solves
 this exact DRM/GBM/EGL/femtovg-on-GLES2 problem and is the fallback to evaluate — before building
 UI on a broken foundation.
+
+### The vertical filter
+
+`ALT` is the vertical counterpart of `RNG`. The bands are Garmin's, from the GTS/GTX traffic
+pages, so a pilot who has flown behind a GTN reads this correctly with no learning:
+
+| Band | Above | Below |
+| --- | --- | --- |
+| `ALT NRM` | +2700 ft | −2700 ft |
+| `ALT ABV` | +9000 ft | −2700 ft |
+| `ALT BLW` | +2700 ft | −9000 ft |
+| `ALT ALL` | unrestricted | unrestricted |
+
+This is the only mechanism on the display that deliberately removes a received, positioned,
+in-range target from the screen, so what it **cannot** hide matters more than what it can:
+
+- **Anything the threat tiers flagged is drawn, whatever the band says.** The filter removes
+  clutter, and an Advisory or Alert is not clutter. This is structural rather than arithmetic on
+  purpose. It happens to be redundant today — the narrowest band is ±2700 ft against an advisory
+  tier of ±1200 ft, so the numbers alone would keep every flagged target on screen — but "these
+  two constants are in the right relationship" is exactly the kind of fact that quietly stops
+  being true when somebody tunes one of them, and the failure mode is a flagged target vanishing
+  from a traffic display. Both halves are tested.
+- **A target whose relative altitude is unknown is never filtered.** You cannot exclude what you
+  cannot measure. This is the ordinary case on the ground, where own-ship has no altitude
+  reference, every tag reads `---` and the status bar shows `NO ALT REF`.
+- **Nothing is hidden silently.** `+N alt` appears in the status bar and the band is named in the
+  footer at all times, including when it is `ALT ALL` and hiding nothing — a pilot who has
+  deliberately opened the filter up should see that they did, not have to infer it from an
+  absence.
+- **A target outside both culls counts only as out of range**, because range is tested first.
+  Counting it twice would make `+N out` and `+N alt` sum to more traffic than is actually being
+  withheld, and each would overstate what pressing its own key would bring back.
+
+Rejected: *dimming* out-of-band traffic instead of hiding it. Safer, but self-defeating — the
+reason to filter is to remove clutter, and a dimmed symbol is still clutter.
 
 ### The NEXRAD underlay
 

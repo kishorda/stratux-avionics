@@ -20,10 +20,12 @@
 
 pub mod ahrspage;
 pub mod font;
+pub mod footerbar;
 pub mod glossary;
 pub mod interact;
 pub mod metar;
 pub mod nexrad;
+pub mod pagestrip;
 pub mod planview;
 pub mod projection;
 pub mod reckon;
@@ -46,7 +48,7 @@ pub use nexrad::Mosaic;
 pub use projection::{Orientation, Projection};
 pub use reckon::ReckonConfig;
 pub use theme::Theme;
-pub use threat::{ThreatConfig, ThreatLevel};
+pub use threat::{AltitudeFilter, ThreatConfig, ThreatLevel};
 
 /// Which screen is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,12 @@ pub enum Page {
 }
 
 impl Page {
+    /// Every page, in the order the page strip lists them top to bottom.
+    ///
+    /// Traffic first because it is the one that matters most, and because a strip read top-down
+    /// should start where the display starts.
+    pub const ALL: [Self; 3] = [Self::PlanView, Self::Weather, Self::Ahrs];
+
     pub fn next(self) -> Self {
         match self {
             Self::PlanView => Self::Weather,
@@ -154,6 +162,8 @@ pub const CAGE_RESULT_DWELL: Duration = Duration::from_secs(3);
 pub struct ViewState {
     pub page: Page,
     pub range_nm: f32,
+    /// Which slice of the vertical world to draw. The horizontal equivalent of `range_nm`.
+    pub altitude_filter: AltitudeFilter,
     pub orientation: Orientation,
     /// Index into the weather list. Its meaning depends on `weather_decode`: the first entry
     /// shown when browsing, the *selected* entry when decoding. Clamped at draw time, since
@@ -176,6 +186,10 @@ impl Default for ViewState {
             // 10 nm is the useful default in a light aircraft: far enough to see converging
             // traffic with time to act, close enough that the circuit isn't a single blob.
             range_nm: 10.0,
+            // The vertical equivalent of that reasoning, and the same default a Garmin traffic
+            // page comes up in. The band is always named in the footer, never merely implied,
+            // because this is the one selection that removes traffic from the screen.
+            altitude_filter: AltitudeFilter::Normal,
             orientation: Orientation::NorthUp,
             weather_scroll: 0,
             weather_decode: false,
@@ -216,6 +230,11 @@ impl ViewState {
         self.orientation = self.orientation.toggled();
     }
 
+    /// Step to the next altitude band, wrapping.
+    pub fn cycle_altitude_filter(&mut self) {
+        self.altitude_filter = self.altitude_filter.cycle();
+    }
+
     pub fn set_cage(&mut self, state: CageState, now: Instant) {
         self.cage = state;
         self.cage_changed = Some(now);
@@ -246,6 +265,13 @@ pub struct FrameStats {
     pub targets_drawn: usize,
     /// Positional targets beyond the selected range, so culled from the rings.
     pub targets_outside_range: usize,
+    /// Targets inside the range ring but outside the selected altitude band.
+    ///
+    /// Reported separately from `targets_outside_range` and never folded into it: the two are
+    /// undone by different keys, and a pilot who cannot tell which selection is hiding something
+    /// has to try both. A target outside *both* is counted as out of range only, because range is
+    /// tested first.
+    pub targets_outside_altitude: usize,
     /// Targets heard without a position: Mode-S only, or ADS-B before its first position report.
     pub targets_no_position: usize,
     /// Targets with a good position that could not be drawn because **own-ship** is missing.
@@ -331,10 +357,15 @@ impl Ui {
             }
         };
 
-        statusbar::draw(self, canvas, state, view, now, &layout, &stats);
-        // Last, so the strip is never overdrawn by page content that ran long. It is the only
-        // way to change pages, so it must survive a drawing bug elsewhere.
-        softkeys::draw(self, canvas, view);
+        statusbar::draw(self, canvas, state, now, &layout, &stats);
+        // After the page, never before: the NEXRAD underlay is one quad that reaches the bottom
+        // edge of the panel, so a footer drawn first would be painted over by the weather.
+        footerbar::draw(self, canvas, state, view, &layout, &stats);
+        // Both strips last, so neither is overdrawn by page content that ran long. The page strip
+        // especially: it is the only way to change pages, so it must survive a drawing bug
+        // elsewhere.
+        softkeys::draw(self, canvas, view, &stats);
+        pagestrip::draw(self, canvas, view);
         stats
     }
 
@@ -378,11 +409,21 @@ pub struct Layout {
     /// Radius in pixels of the outermost range ring.
     pub outer_radius: f32,
     pub margin: f32,
-    /// Width of the soft-key strip down the right-hand edge.
+    /// Width of each vertical strip. Both are the same width, which is what makes the content
+    /// area centred on the panel rather than merely left of the keys.
     pub strip_width: f32,
-    /// Width available to everything else. **Use this, not `width`, for any content that must
-    /// not slide under the soft keys** — the strip is drawn over the right edge of the panel.
-    pub content_width: f32,
+    /// Left edge of the content area — immediately right of the function strip.
+    ///
+    /// **Nothing may be positioned from zero.** Everything that used to start at the left edge of
+    /// the panel now starts here; the function strip is drawn over what used to be page content.
+    pub content_x0: f32,
+    /// Right edge of the content area — immediately left of the page strip.
+    ///
+    /// Deliberately a coordinate and not a width. The field this replaced was a width that most
+    /// call sites used as if it were the right edge, which was true only while the content area
+    /// began at zero. Keeping the name and changing the meaning would have compiled everywhere and
+    /// been wrong in about thirty places.
+    pub content_x1: f32,
 }
 
 impl Layout {
@@ -395,13 +436,22 @@ impl Layout {
         // controls, they get pressed in turbulence, and a strip that scales below roughly a
         // fingertip stops being hittable long before it stops being readable.
         let strip_width = (width * 0.12).max(72.0).min(width * 0.25);
-        let content_width = (width - strip_width).max(1.0);
+        let content_x0 = strip_width;
+        let content_x1 = (width - strip_width).max(content_x0 + 1.0);
+        let content_width = content_x1 - content_x0;
 
         let plan_top = status_bar_height;
         let plan_height = (height - status_bar_height - footer_height).max(1.0);
-        let center = (content_width * 0.5, plan_top + plan_height * 0.5);
+        let center = (
+            content_x0 + content_width * 0.5,
+            plan_top + plan_height * 0.5,
+        );
 
         // Leave room outside the ring for its label and the compass ticks.
+        //
+        // On the 800x480 panel this is height-bound with room to spare — the rings need 426 px of
+        // width and have 608 — which is why a second strip cost no ring radius at all. Width only
+        // begins to bind once the two strips together take more than 374 px.
         let radius_limit = (plan_height * 0.5).min(content_width * 0.5) - margin;
         let outer_radius = (radius_limit - theme.font_size_small * 1.6).max(24.0);
 
@@ -414,7 +464,48 @@ impl Layout {
             outer_radius,
             margin,
             strip_width,
-            content_width,
+            content_x0,
+            content_x1,
         }
+    }
+
+    /// Width of the area between the two strips.
+    pub fn content_width(&self) -> f32 {
+        self.content_x1 - self.content_x0
+    }
+
+    /// Left edge for page content, inside the margin. **Not `margin`** — that was the left edge
+    /// only while the content area began at zero.
+    pub fn content_left(&self) -> f32 {
+        self.content_x0 + self.margin
+    }
+
+    /// Right edge for page content, inside the margin.
+    pub fn content_right(&self) -> f32 {
+        self.content_x1 - self.margin
+    }
+
+    /// Top of both strips: immediately below the status bar.
+    ///
+    /// The bars run edge to edge and the strips sit between them, rather than the strips running
+    /// full height and interrupting the bars at each end. A bar that stops short of the panel edge
+    /// reads as a panel of three columns; a bar that crosses it reads as a bar.
+    pub fn strip_y0(&self) -> f32 {
+        self.status_bar_height
+    }
+
+    /// Bottom of both strips: the top of the footer bar.
+    pub fn strip_y1(&self) -> f32 {
+        (self.height - self.footer_height).max(self.strip_y0() + 1.0)
+    }
+
+    /// Height of the strips, between the two bars.
+    pub fn strip_height(&self) -> f32 {
+        self.strip_y1() - self.strip_y0()
+    }
+
+    /// Top of the footer bar.
+    pub fn footer_y0(&self) -> f32 {
+        self.height - self.footer_height
     }
 }

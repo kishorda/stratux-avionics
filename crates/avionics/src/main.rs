@@ -57,6 +57,7 @@ Output
 
 View
   --range NM           initial range ring: 2, 5, 10, 20, 40  [default: 10]
+  --alt-filter BAND    vertical filter: norm, above, below, all   [default: norm]
   --track-up           start in track-up instead of north-up
   --weather-page       start on the FIS-B text page
   --ahrs-page          start on the attitude page
@@ -156,6 +157,16 @@ fn parse_args() -> Result<Option<Args>> {
                     bail!("--range must be one of {:?}", ViewState::RANGES);
                 }
                 args.view.range_nm = v;
+            }
+            "--alt-filter" => {
+                let v = value()?;
+                args.view.altitude_filter = match v.to_ascii_lowercase().as_str() {
+                    "norm" | "normal" => avionics_ui::AltitudeFilter::Normal,
+                    "above" | "abv" => avionics_ui::AltitudeFilter::Above,
+                    "below" | "blw" => avionics_ui::AltitudeFilter::Below,
+                    "all" | "unrestricted" => avionics_ui::AltitudeFilter::Unrestricted,
+                    other => bail!("--alt-filter must be norm, above, below or all, not {other:?}"),
+                };
             }
             "--size" => {
                 let v = value()?;
@@ -432,6 +443,7 @@ Interactive harness
   left click     tap        (status bar switches page; body cycles range / scrolls weather)
   right click    two-finger tap (north-up <-> track-up)
   r / R          range up / down
+  a              cycle the vertical filter
   o              toggle orientation
   p              switch page
   w              toggle the NEXRAD underlay
@@ -448,6 +460,7 @@ fn apply_key(view: &mut ViewState, key: char) {
     match key {
         'r' => view.cycle_range(),
         'R' => view.cycle_range_down(),
+        'a' => view.cycle_altitude_filter(),
         'o' => view.toggle_orientation(),
         'p' => view.page = view.page.next(),
         'w' => view.show_weather_underlay = !view.show_weather_underlay,

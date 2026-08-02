@@ -16,13 +16,12 @@ use avionics_gfx::femtovg::{Align, Baseline, Color, Paint, Path};
 use avionics_gfx::Canvas;
 use stratux_client::{AppState, Stream};
 
-use crate::{FrameStats, Layout, Ui, ViewState};
+use crate::{FrameStats, Layout, Ui};
 
 pub fn draw(
     ui: &Ui,
     canvas: &mut Canvas,
     state: &AppState,
-    view: &ViewState,
     now: Instant,
     layout: &Layout,
     stats: &FrameStats,
@@ -30,12 +29,12 @@ pub fn draw(
     let theme = &ui.theme;
 
     let mut background = Path::new();
-    background.rect(0.0, 0.0, layout.content_width, layout.status_bar_height);
+    background.rect(0.0, 0.0, layout.width, layout.status_bar_height);
     canvas.fill_path(&background, &Paint::color(theme.bar_background));
 
     let mut separator = Path::new();
     separator.move_to(0.0, layout.status_bar_height);
-    separator.line_to(layout.content_width, layout.status_bar_height);
+    separator.line_to(layout.width, layout.status_bar_height);
     canvas.stroke_path(
         &separator,
         &Paint::color(theme.text_dim).with_line_width(1.0),
@@ -44,17 +43,11 @@ pub fn draw(
     let baseline = layout.status_bar_height * 0.5;
     let mut cursor = layout.margin;
 
-    // Page indicator, doubling as the touch target that switches pages. It is the only chrome
-    // present and identical on every page, which is what makes it a reliable place for navigation.
-    cursor = field(
-        ui,
-        canvas,
-        cursor,
-        baseline,
-        "PAGE",
-        view.page.label(),
-        theme.text_primary,
-    );
+    // There is no PAGE field here any more. It named the page you were on, which the page strip
+    // now does permanently and far more legibly — and removing it was not merely tidy, it is what
+    // made the rest of this bar fit. The two strips cost 96 px of content width, the busiest
+    // status line measured 603 px against the 600 now available, and the PAGE field with its
+    // trailing gap was worth 63 px. The redundancy paid for the space its own replacement took.
 
     // --- GPS ---
     let gps_ok = state.ownship.fix.is_usable();
@@ -107,6 +100,12 @@ pub fn draw(
     if stats.targets_outside_range > 0 {
         // Culled, not lost. Without this the pilot cannot tell a quiet sky from a small range ring.
         traffic.push_str(&format!(" +{} out", stats.targets_outside_range));
+    }
+    // Hidden by the vertical filter, and undone by a different key from `out`. Kept separate for
+    // that reason: folding the two together would leave the pilot pressing ALT and RNG in turn to
+    // find out which selection is holding traffic back.
+    if stats.targets_outside_altitude > 0 {
+        traffic.push_str(&format!(" +{} alt", stats.targets_outside_altitude));
     }
     if stats.targets_no_position > 0 {
         traffic.push_str(&format!(" +{} nopos", stats.targets_no_position));
@@ -288,7 +287,7 @@ fn draw_alarms(
 
     // content_width, not width: past that lies the soft-key strip, and a warning drawn
     // under it is a warning the pilot never sees.
-    let mut x = layout.content_width - layout.margin;
+    let mut x = layout.width - layout.margin;
     for (text, colour) in messages {
         paint.set_color(colour);
         let width = canvas
@@ -298,7 +297,7 @@ fn draw_alarms(
         let _ = canvas.fill_text(x, baseline, &text, &paint);
         x -= width + 12.0;
         // Stop before running into the left-hand fields rather than overprinting them.
-        if x < layout.content_width * 0.45 {
+        if x < layout.width * 0.45 {
             break;
         }
     }

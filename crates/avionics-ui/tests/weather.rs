@@ -388,20 +388,19 @@ fn tap_zones_split_the_screen_as_expected() {
 }
 
 #[test]
-fn tapping_the_status_bar_switches_page() {
-    // The status bar is the one piece of chrome present and identical on every page, which is what
-    // makes it a reliable navigation target.
+fn the_status_bar_is_inert() {
+    // This test used to assert the opposite: that tapping the status bar cycled pages, on the
+    // grounds that it was the largest target on screen. The page strip replaced that with three
+    // keys of 151 px each, so the fallback bought nothing and cost an accidental-press path along
+    // the entire top edge of the panel. Same trade as the plan-view body.
     let l = layout();
     let mut view = ViewState::default();
-    assert_eq!(view.page, Page::PlanView);
+    let x = l.content_x0 + l.content_width() * 0.5;
 
-    // Three pages now, so a full cycle is three presses.
-    tap(&mut view, &l, 400.0, 4.0, 8, 0);
-    assert_eq!(view.page, Page::Weather);
-    tap(&mut view, &l, 400.0, 4.0, 8, 0);
-    assert_eq!(view.page, Page::Ahrs);
-    tap(&mut view, &l, 400.0, 4.0, 8, 0);
-    assert_eq!(view.page, Page::PlanView);
+    for _ in 0..3 {
+        tap(&mut view, &l, x, 4.0, 8, 0);
+        assert_eq!(view.page, Page::PlanView, "the status bar must not change page");
+    }
 }
 
 #[test]

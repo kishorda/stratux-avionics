@@ -9,8 +9,10 @@ use std::time::{Duration, Instant};
 
 use avionics_ui::projection::{advance, Orientation, Projection};
 use avionics_ui::reckon::{reckon, reckon_ownship, ReckonConfig};
-use avionics_ui::threat::{assess, format_relative_altitude, ThreatConfig, ThreatLevel};
-use avionics_ui::ViewState;
+use avionics_ui::threat::{
+    assess, format_relative_altitude, AltitudeFilter, Assessment, ThreatConfig, ThreatLevel,
+};
+use avionics_ui::{planview, ViewState};
 use stratux_client::domain::{LatLon, Target, TargetType, TrafficSource};
 
 const ORIGIN: LatLon = LatLon {
@@ -348,6 +350,239 @@ fn threat_levels_order_from_least_to_most_urgent() {
     // The plan view sorts by this to draw alerts on top and to give them first pick of tag space.
     assert!(ThreatLevel::Normal < ThreatLevel::Advisory);
     assert!(ThreatLevel::Advisory < ThreatLevel::Alert);
+}
+
+// --- the vertical filter -------------------------------------------------------------------
+//
+// This is the only mechanism on the display that deliberately removes a received, positioned,
+// in-range target from the screen, so what it *cannot* remove matters more than what it can.
+
+/// A target `relative_ft` above own-ship (negative for below), `range_nm` away.
+fn assessed(relative_ft: f32, range_nm: f32) -> avionics_ui::threat::Assessment {
+    const OWN_FT: f32 = 5000.0;
+    let mut t = target(Some(ORIGIN));
+    t.altitude_ft = Some((OWN_FT + relative_ft) as i32);
+    assess(&t, range_nm, Some(OWN_FT), &ThreatConfig::default())
+}
+
+#[test]
+fn the_normal_band_keeps_traffic_within_2700_feet() {
+    let f = AltitudeFilter::Normal;
+    // Well clear horizontally, so nothing here is a threat and the filter is free to act.
+    assert!(f.admits(&assessed(2000.0, 30.0)));
+    assert!(f.admits(&assessed(-2000.0, 30.0)));
+    assert!(!f.admits(&assessed(4000.0, 30.0)));
+    assert!(!f.admits(&assessed(-4000.0, 30.0)));
+}
+
+#[test]
+fn above_and_below_are_mirror_images_of_each_other() {
+    // 5000 ft is inside the wide half and outside the narrow one, so it separates the two bands.
+    assert!(AltitudeFilter::Above.admits(&assessed(5000.0, 30.0)));
+    assert!(!AltitudeFilter::Above.admits(&assessed(-5000.0, 30.0)));
+
+    assert!(AltitudeFilter::Below.admits(&assessed(-5000.0, 30.0)));
+    assert!(!AltitudeFilter::Below.admits(&assessed(5000.0, 30.0)));
+}
+
+#[test]
+fn unrestricted_admits_everything() {
+    for relative in [-40000.0, -5000.0, 0.0, 5000.0, 40000.0] {
+        assert!(
+            AltitudeFilter::Unrestricted.admits(&assessed(relative, 30.0)),
+            "{relative} ft was filtered by the unrestricted band"
+        );
+    }
+}
+
+#[test]
+fn no_band_can_hide_a_flagged_target_however_far_out_of_band_it_is() {
+    // This combination cannot arise from `assess` today, and the assessment is built by hand for
+    // that reason. A threat has to be within 1200 ft vertically, which is well inside the
+    // narrowest band, so the numbers alone already keep every flagged target on screen — see
+    // `the_narrowest_band_is_wider_than_the_advisory_tier`.
+    //
+    // The exemption is insurance against the day those two constants stop being in that
+    // relationship, because the failure mode if they do is a flagged target silently leaving a
+    // traffic display. Belt and braces, and the braces are the cheap half.
+    for level in [ThreatLevel::Advisory, ThreatLevel::Alert] {
+        for relative_ft in [-30000.0, 30000.0] {
+            let flagged = Assessment {
+                level,
+                relative_altitude_ft: Some(relative_ft),
+                range_nm: 1.0,
+            };
+            for filter in AltitudeFilter::ALL {
+                assert!(
+                    filter.admits(&flagged),
+                    "{filter:?} hid a {level:?} at {relative_ft:+} ft"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_out_of_band_target_that_is_only_normal_is_filtered() {
+    // The other half of the exemption: it must not swallow the whole feature. Same geometry as
+    // above, minus the flag.
+    let ordinary = Assessment {
+        level: ThreatLevel::Normal,
+        relative_altitude_ft: Some(30000.0),
+        range_nm: 1.0,
+    };
+    assert!(!AltitudeFilter::Normal.admits(&ordinary));
+    assert!(AltitudeFilter::Unrestricted.admits(&ordinary));
+}
+
+#[test]
+fn a_target_with_no_known_relative_altitude_is_never_filtered() {
+    // The ordinary case on the ground: own-ship has no altitude reference, every tag reads `---`,
+    // and there is nothing to compare against. Filtering on an unknown would empty the screen in
+    // exactly the situation the `+N held` counter exists to make legible.
+    let t = target(Some(ORIGIN));
+    let no_own_altitude = assess(&t, 30.0, None, &ThreatConfig::default());
+    assert_eq!(no_own_altitude.relative_altitude_ft, None);
+
+    let mut mode_s = target(Some(ORIGIN));
+    mode_s.altitude_ft = None;
+    let no_target_altitude = assess(&mode_s, 30.0, Some(5000.0), &ThreatConfig::default());
+    assert_eq!(no_target_altitude.relative_altitude_ft, None);
+
+    for filter in AltitudeFilter::ALL {
+        assert!(filter.admits(&no_own_altitude), "{filter:?}");
+        assert!(filter.admits(&no_target_altitude), "{filter:?}");
+    }
+}
+
+#[test]
+fn the_narrowest_band_is_wider_than_the_advisory_tier() {
+    // Belt to `no_band_can_ever_hide_a_threat`'s braces, and the reason that test can never be
+    // vacuous: even without the "threats are exempt" rule, the numbers alone would keep every
+    // flagged target on screen. Tuning either constant past the other should fail here first.
+    let advisory = ThreatConfig::default().advisory.altitude_ft;
+    for filter in AltitudeFilter::ALL {
+        let Some((below, above)) = filter.band() else {
+            continue;
+        };
+        assert!(below > advisory, "{filter:?} is narrower below than a TA");
+        assert!(above > advisory, "{filter:?} is narrower above than a TA");
+    }
+}
+
+// --- how the two culls interact --------------------------------------------------------------
+
+/// Own-ship at ORIGIN, 5000 ft, with a 20 nm ring and the given band.
+fn view_with(filter: AltitudeFilter) -> (Projection, ViewState) {
+    let projection = Projection::new(ORIGIN, CENTER, PX_PER_NM, Orientation::NorthUp, None);
+    let view = ViewState {
+        range_nm: 20.0,
+        altitude_filter: filter,
+        ..Default::default()
+    };
+    (projection, view)
+}
+
+/// A target `range_nm` out on a north bearing, `relative_ft` above own-ship's 5000.
+fn out_there(range_nm: f64, relative_ft: i32) -> (Target, LatLon) {
+    let mut t = target(Some(ORIGIN));
+    t.altitude_ft = Some(5000 + relative_ft);
+    let position = at_bearing(0.0, range_nm);
+    (t, position)
+}
+
+#[test]
+fn a_target_inside_both_culls_is_drawn() {
+    let (projection, view) = view_with(AltitudeFilter::Normal);
+    let (t, position) = out_there(8.0, 1000);
+    assert!(matches!(
+        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::Admission::Draw(_)
+    ));
+}
+
+#[test]
+fn an_in_range_target_outside_the_band_is_culled_vertically() {
+    let (projection, view) = view_with(AltitudeFilter::Normal);
+    let (t, position) = out_there(8.0, 6000);
+    assert_eq!(
+        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::Admission::OutsideAltitude
+    );
+}
+
+#[test]
+fn a_target_outside_both_culls_counts_only_as_out_of_range() {
+    // Range is tested first, deliberately. Counting it in both would make `+N out` and `+N alt`
+    // sum to more traffic than is actually being withheld, and each would overstate what pressing
+    // its own key would bring back.
+    let (projection, view) = view_with(AltitudeFilter::Normal);
+    let (t, position) = out_there(40.0, 6000);
+    assert_eq!(
+        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::Admission::OutsideRange
+    );
+}
+
+#[test]
+fn opening_the_band_up_brings_the_same_target_back() {
+    // The two culls are independent: nothing about widening the vertical filter may change the
+    // horizontal verdict, or vice versa.
+    let (t, position) = out_there(8.0, 6000);
+    let own = Some(5000.0);
+    let config = ThreatConfig::default();
+
+    let (projection, narrow) = view_with(AltitudeFilter::Normal);
+    let (_, wide) = view_with(AltitudeFilter::Unrestricted);
+
+    assert_eq!(
+        planview::admit(&t, position, &projection, &narrow, own, &config),
+        planview::Admission::OutsideAltitude
+    );
+    assert!(matches!(
+        planview::admit(&t, position, &projection, &wide, own, &config),
+        planview::Admission::Draw(_)
+    ));
+}
+
+#[test]
+fn without_own_ship_altitude_the_band_culls_nothing() {
+    // Every relative altitude is unknown, so every target is admitted whatever the band says.
+    // This is the state the display is in on the ground, showing `NO ALT REF`.
+    let (t, position) = out_there(8.0, 30000);
+    let config = ThreatConfig::default();
+    for filter in AltitudeFilter::ALL {
+        let (projection, view) = view_with(filter);
+        assert!(
+            matches!(
+                planview::admit(&t, position, &projection, &view, None, &config),
+                planview::Admission::Draw(_)
+            ),
+            "{filter:?} culled a target with no altitude reference"
+        );
+    }
+}
+
+#[test]
+fn every_band_has_its_own_label_and_the_cycle_closes() {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut filter = AltitudeFilter::default();
+    for _ in 0..AltitudeFilter::ALL.len() {
+        let label = filter.label();
+        assert!(!seen.contains(&label), "{label} is used by two bands");
+        seen.push(label);
+        filter = filter.cycle();
+    }
+    assert_eq!(filter, AltitudeFilter::default(), "the cycle must close");
+}
+
+#[test]
+fn the_default_band_is_the_one_the_footer_promises() {
+    // The footer and the soft key both read `ViewState::altitude_filter`, so a default that
+    // disagreed with the type's own default would show one thing and filter by another.
+    assert_eq!(ViewState::default().altitude_filter, AltitudeFilter::Normal);
+    assert!(AltitudeFilter::Normal.is_narrowing());
+    assert!(!AltitudeFilter::Unrestricted.is_narrowing());
 }
 
 // --- view state ---------------------------------------------------------------------------

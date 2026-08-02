@@ -83,7 +83,7 @@ pub fn draw(
         None => "none".into(),
     };
     let _ = canvas.fill_text(
-        layout.margin,
+        layout.content_left(),
         y,
         format!("FIS-B TEXT  {} products   |   NEXRAD {nexrad_text}", items.len()),
         &header,
@@ -96,7 +96,7 @@ pub fn draw(
         scroll.set_text_baseline(Baseline::Middle);
         scroll.set_text_align(Align::Right);
         let _ = canvas.fill_text(
-            layout.content_width - layout.margin,
+            layout.content_right(),
             y,
             format!(
                 "{}-{} of {}",
@@ -110,8 +110,8 @@ pub fn draw(
 
     y += line * 1.2;
     let mut separator = Path::new();
-    separator.move_to(layout.margin, y - line * 0.4);
-    separator.line_to(layout.content_width - layout.margin, y - line * 0.4);
+    separator.move_to(layout.content_left(), y - line * 0.4);
+    separator.line_to(layout.content_right(), y - line * 0.4);
     canvas.stroke_path(
         &separator,
         &Paint::color(theme.text_dim).with_line_width(1.0),
@@ -125,7 +125,6 @@ pub fn draw(
     if view.weather_decode {
         let selected = view.weather_scroll.min(items.len() - 1);
         draw_decoded(ui, canvas, items[selected], now, layout, y, selected, items.len());
-        draw_footer(ui, canvas, layout, view, items.len(), per_page, selected);
         return;
     }
 
@@ -144,7 +143,7 @@ pub fn draw(
         } else {
             format!("{} {}", item.product.label(), item.location)
         };
-        let _ = canvas.fill_text(layout.margin, y, &heading, &label);
+        let _ = canvas.fill_text(layout.content_left(), y, &heading, &label);
 
         // Flight category badge — METARs and SPECIs only.
         //
@@ -171,7 +170,7 @@ pub fn draw(
             badge.set_text_baseline(Baseline::Middle);
             badge.set_text_align(Align::Left);
             let _ = canvas.fill_text(
-                layout.margin + heading_w + 10.0,
+                layout.content_left() + heading_w + 10.0,
                 y,
                 category.label(),
                 &badge,
@@ -185,7 +184,7 @@ pub fn draw(
         age_paint.set_text_baseline(Baseline::Middle);
         age_paint.set_text_align(Align::Right);
         let _ = canvas.fill_text(
-            layout.content_width - layout.margin,
+            layout.content_right(),
             y,
             format_age(age),
             &age_paint,
@@ -202,8 +201,8 @@ pub fn draw(
         body.set_text_baseline(Baseline::Middle);
         body.set_text_align(Align::Left);
 
-        let indent = layout.margin + theme.font_size_small * 1.2;
-        let available = layout.content_width - indent - layout.margin;
+        let indent = layout.content_left() + theme.font_size_small * 1.2;
+        let available = layout.content_right() - indent;
         draw_body_tokens(ui, canvas, &item.body, &mut body, indent, y, available);
 
         y += line;
@@ -212,12 +211,11 @@ pub fn draw(
         }
     }
 
-    draw_footer(ui, canvas, layout, view, items.len(), per_page, offset);
 }
 
 fn draw_empty_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout) {
     let theme = &ui.theme;
-    let (cx, cy) = (layout.content_width * 0.5, layout.height * 0.5);
+    let (cx, cy) = (layout.content_x0 + layout.content_width() * 0.5, layout.height * 0.5);
 
     // "Nothing yet" is the normal state for minutes after a cold start, because Stratux's
     // /weather socket does not replay its buffer on connect. Saying so avoids it reading as a
@@ -250,38 +248,6 @@ fn draw_empty_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &La
     sub.set_text_align(Align::Center);
     sub.set_text_baseline(Baseline::Top);
     let _ = canvas.fill_text(cx, cy + 4.0, detail, &sub);
-}
-
-fn draw_footer(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    layout: &Layout,
-    _view: &ViewState,
-    total: usize,
-    per_page: usize,
-    offset: usize,
-) {
-    let theme = &ui.theme;
-    let baseline = layout.height - layout.footer_height * 0.35;
-
-    let mut hint = Paint::color(theme.text_dim);
-    hint.set_font(&[ui.font()]);
-    hint.set_font_size(theme.font_size_small);
-    hint.set_text_baseline(Baseline::Alphabetic);
-    hint.set_text_align(Align::Left);
-
-    // Name the soft keys, not the touch zones. The keys are the primary controls now, and a hint
-    // that teaches tapping the body would teach the habit the strip exists to remove.
-    let text = if total > per_page {
-        if offset + per_page >= total {
-            "DOWN wraps to the top"
-        } else {
-            "UP / DOWN to scroll"
-        }
-    } else {
-        "PAGE for the traffic view"
-    };
-    let _ = canvas.fill_text(layout.margin, baseline, text, &hint);
 }
 
 fn age_colour(ui: &Ui, age: std::time::Duration) -> avionics_gfx::femtovg::Color {
@@ -408,7 +374,7 @@ fn draw_decoded(
     } else {
         format!("{} {}", item.product.label(), item.location)
     };
-    let _ = canvas.fill_text(layout.margin, y, &heading, &label);
+    let _ = canvas.fill_text(layout.content_left(), y, &heading, &label);
 
     let heading_w = canvas
         .measure_text(0.0, 0.0, &heading, &label)
@@ -421,7 +387,7 @@ fn draw_decoded(
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);
             badge.set_text_align(Align::Left);
-            let _ = canvas.fill_text(layout.margin + heading_w + 10.0, y, category.label(), &badge);
+            let _ = canvas.fill_text(layout.content_left() + heading_w + 10.0, y, category.label(), &badge);
         }
     }
 
@@ -431,7 +397,7 @@ fn draw_decoded(
     right.set_text_baseline(Baseline::Middle);
     right.set_text_align(Align::Right);
     let _ = canvas.fill_text(
-        layout.content_width - layout.margin,
+        layout.content_right(),
         y,
         format!("{} of {}   {}", index + 1, total, format_age(now.saturating_duration_since(item.received))),
         &right,
@@ -449,14 +415,14 @@ fn draw_decoded(
     body.set_text_baseline(Baseline::Middle);
     body.set_text_align(Align::Left);
 
-    let indent = layout.margin + theme.font_size_small * 0.8;
-    let available = layout.content_width - indent - layout.margin;
+    let indent = layout.content_left() + theme.font_size_small * 0.8;
+    let available = layout.content_right() - indent;
     y = draw_wrapped_tokens(ui, canvas, &item.body, &mut body, indent, y, available, line);
 
     y += line * 0.4;
     let mut separator = Path::new();
-    separator.move_to(layout.margin, y);
-    separator.line_to(layout.content_width - layout.margin, y);
+    separator.move_to(layout.content_left(), y);
+    separator.line_to(layout.content_right(), y);
     canvas.stroke_path(&separator, &Paint::color(theme.text_dim).with_line_width(1.0));
     y += line * 0.7;
 
@@ -469,7 +435,7 @@ fn draw_decoded(
         none.set_text_baseline(Baseline::Middle);
         none.set_text_align(Align::Left);
         let _ = canvas.fill_text(
-            layout.margin,
+            layout.content_left(),
             y,
             "no recognised abbreviations in this report",
             &none,
@@ -499,7 +465,7 @@ fn draw_decoded(
         .floor()
         .max(1.0) as usize;
     let (columns, rows) = expansion_layout(codes.len(), rows_available);
-    let column_w = (layout.content_width - layout.margin * 2.0) / columns as f32;
+    let column_w = (layout.content_width() - layout.margin * 2.0) / columns as f32;
 
     let code_column = codes
         .iter()
@@ -523,7 +489,7 @@ fn draw_decoded(
         }
         let column = i / rows;
         let row = i % rows;
-        let x = layout.margin + column as f32 * column_w;
+        let x = layout.content_left() + column as f32 * column_w;
         let ry = y + row as f32 * line * 0.95;
 
         // Hazard codes keep the colour they had in the report above, so the eye can match the
@@ -549,7 +515,7 @@ fn draw_decoded(
         more.set_text_baseline(Baseline::Middle);
         more.set_text_align(Align::Right);
         let _ = canvas.fill_text(
-            layout.content_width - layout.margin,
+            layout.content_right(),
             y + rows as f32 * line * 0.95,
             format!("+{} more", codes.len() - shown),
             &more,
