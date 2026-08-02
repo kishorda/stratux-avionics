@@ -133,6 +133,37 @@ impl World {
         }
     }
 
+    /// Replace the traffic picture with a freshly polled one.
+    ///
+    /// Wholesale replacement, not a merge. The feed is authoritative about what is in the sky: a
+    /// target it no longer lists has either landed, left the area or stopped being heard, and all
+    /// three mean it should stop being published. Merging would accumulate ghosts that never age
+    /// out, because nothing here would ever be told they were gone.
+    ///
+    /// The positions that arrive are the truth and replace the flown-forward estimates, which is
+    /// the same snap-on-new-fix the display's own reckoner does.
+    pub fn refresh_traffic(&mut self, targets: Vec<wire::TrafficInfo>) {
+        self.targets = targets;
+    }
+
+    /// Add any weather products not already held.
+    ///
+    /// Additive, unlike traffic, because FIS-B products are not a picture of the current world —
+    /// they are reports that stay valid until superseded, and a station dropping out of one poll
+    /// does not retract its last METAR. Keyed on the raw text so a re-poll returning the same
+    /// report does not queue it a second time.
+    pub fn merge_weather(&mut self, incoming: Vec<wire::WeatherMessage>) -> usize {
+        let mut added = 0;
+        for item in incoming {
+            if self.weather.iter().any(|w| w.Data == item.Data) {
+                continue;
+            }
+            self.weather.push(item);
+            added += 1;
+        }
+        added
+    }
+
     /// The next unpublished weather product, if any.
     pub fn next_weather(&mut self) -> Option<wire::WeatherMessage> {
         let item = self.weather.get(self.weather_published)?.clone();
@@ -306,6 +337,51 @@ mod tests {
         assert_eq!(world.next_weather().map(|w| w.Type), Some("METAR".into()));
         assert_eq!(world.next_weather().map(|w| w.Type), Some("TAF".into()));
         assert!(world.next_weather().is_none(), "must not loop the list forever");
+    }
+
+    #[test]
+    fn a_traffic_refresh_replaces_rather_than_accumulating() {
+        // The feed is authoritative about what is in the sky. Merging would keep publishing
+        // targets that have landed or left, and nothing here would ever be told they were gone —
+        // the display would fill with ghosts that never age out.
+        let mut world = World::new(
+            OwnShip::stationary(40.0, -74.0),
+            vec![target(0.0, 100), target(90.0, 200)],
+            vec![],
+        );
+        world.refresh_traffic(vec![target(180.0, 300)]);
+        assert_eq!(world.targets.len(), 1);
+        assert_eq!(world.targets[0].Track, 180.0);
+    }
+
+    #[test]
+    fn a_refresh_snaps_positions_back_to_the_feed() {
+        // Between polls the target is flown forward on an estimate. The arriving fix is the truth
+        // and must win, exactly as a real ADS-B update does for the display's own reckoner.
+        let mut world = World::new(OwnShip::stationary(40.0, -74.0), vec![target(0.0, 600)], vec![]);
+        world.tick(Duration::from_secs(30));
+        assert!(world.targets[0].Lat > 40.0, "fixture should have moved");
+
+        world.refresh_traffic(vec![target(0.0, 600)]);
+        assert_eq!(world.targets[0].Lat, 40.0, "the poll is authoritative");
+    }
+
+    #[test]
+    fn weather_accumulates_and_does_not_duplicate_on_re_poll() {
+        // Unlike traffic, a report stays valid until superseded — a station missing from one poll
+        // has not retracted its last METAR. But polling every few minutes returns the same text
+        // repeatedly, and queueing it each time would publish the same report forever.
+        let metar = |body: &str| wire::WeatherMessage {
+            Type: "METAR".into(),
+            Data: body.into(),
+            ..Default::default()
+        };
+        let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], vec![]);
+
+        assert_eq!(world.merge_weather(vec![metar("A"), metar("B")]), 2);
+        assert_eq!(world.merge_weather(vec![metar("A"), metar("B")]), 0, "re-poll adds nothing");
+        assert_eq!(world.merge_weather(vec![metar("B"), metar("C")]), 1, "only the new one");
+        assert_eq!(world.weather.len(), 3);
     }
 
     #[test]

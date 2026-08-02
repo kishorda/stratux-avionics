@@ -51,6 +51,8 @@ pub struct Faults {
 pub struct Config {
     pub port: u16,
     pub faults: Faults,
+    /// Poll the live feeds instead of serving a fixed snapshot.
+    pub feeds: Option<crate::feeds::Feeds>,
 }
 
 /// One broadcast channel per stream. Late subscribers miss nothing that matters: `/traffic`
@@ -86,6 +88,50 @@ impl Channels {
     }
 }
 
+/// Keep the world topped up from the live feeds.
+///
+/// Spawned only for `--internet`. Every failure here is logged and swallowed: the server carries
+/// on serving the last good picture, flying it forward, until the next poll succeeds. A network
+/// blip must not blank the display or take the process down, or you end up debugging the mock
+/// instead of the thing you meant to test.
+async fn poll_feeds(world: Arc<Mutex<World>>, feeds: crate::feeds::Feeds) {
+    // Weather first and immediately: it is the slowest to arrive on a real FIS-B receiver and the
+    // most annoying to wait for on a desk.
+    let mut traffic_tick = tokio::time::interval(feeds.traffic_every);
+    let mut weather_tick = tokio::time::interval(feeds.weather_every);
+
+    loop {
+        tokio::select! {
+            _ = traffic_tick.tick() => match crate::feeds::fetch_traffic(&feeds).await {
+                Ok(raw) => {
+                    match crate::feeds::to_snapshot(
+                        &feeds, raw,
+                        serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
+                    ) {
+                        Ok(snap) => {
+                            let targets = snap.targets();
+                            tracing::info!(count = targets.len(), "traffic poll");
+                            world.lock().await.refresh_traffic(targets);
+                        }
+                        Err(e) => tracing::warn!(error = %e, "traffic poll unusable"),
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "traffic poll failed; serving the last picture"),
+            },
+            _ = weather_tick.tick() => {
+                let (metar, taf, pirep) = crate::feeds::fetch_weather(&feeds).await;
+                match crate::feeds::to_snapshot(&feeds, serde_json::Value::Null, metar, taf, pirep) {
+                    Ok(snap) => {
+                        let added = world.lock().await.merge_weather(snap.weather());
+                        tracing::info!(added, "weather poll");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "weather poll unusable"),
+                }
+            }
+        }
+    }
+}
+
 pub async fn serve(world: World, config: Config) -> Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", config.port))
         .await
@@ -106,6 +152,14 @@ pub async fn serve(world: World, config: Config) -> Result<()> {
     ));
     if let Some(period) = faults.drop_every {
         tokio::spawn(drop_sockets(period, Arc::clone(&generation)));
+    }
+    if let Some(feeds) = config.feeds {
+        tracing::info!(
+            lat = feeds.lat, lon = feeds.lon, radius_nm = feeds.radius_nm,
+            traffic_s = feeds.traffic_every.as_secs(), weather_s = feeds.weather_every.as_secs(),
+            "internet mode: polling adsb.lol and aviationweather.gov"
+        );
+        tokio::spawn(poll_feeds(Arc::clone(&world), feeds));
     }
 
     tracing::info!(port = config.port, "mock Stratux listening");

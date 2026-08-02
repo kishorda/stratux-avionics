@@ -1,13 +1,20 @@
 //! A mock Stratux, for testing the display on a desk with no Pi, no radios and no internet.
 //!
-//! Seeded from a snapshot of free public data — real aircraft from adsb.lol and real METARs and
-//! TAFs from aviationweather.gov — captured once by `fetch-snapshot.sh` and served offline
-//! thereafter. See `docs/free-aviation-data.md` for what those services are and what their terms
-//! allow.
+//! Fed with real data from free public services — aircraft from adsb.lol, METARs and TAFs from
+//! aviationweather.gov — in either of two ways:
 //!
-//! Run without a snapshot and it serves an empty sky at a given position, which is still useful:
-//! that is the state the display spends its first minutes in on every cold start.
+//! * `--internet` polls them and keeps polling, so the display shows what is flying right now.
+//! * `--snapshot` serves a capture from `fetch-snapshot.sh`, with no network at all.
+//!
+//! See `docs/free-aviation-data.md` for what those services are and what their terms allow.
+//!
+//! The display is not modified for either. It takes its ordinary live WebSocket path and has no
+//! idea it is not talking to a Pi, which is the point: no HTTP client in the aircraft binary.
+//!
+//! With neither flag it serves an empty sky at a given position, which is still useful — that is
+//! the state the display spends its first minutes in on every cold start.
 
+mod feeds;
 mod server;
 mod snapshot;
 mod world;
@@ -24,9 +31,16 @@ use world::{OwnShip, World};
 const USAGE: &str = "\
 mock-stratux — a fake Stratux for offline testing on the dev machine
 
-  --snapshot FILE      data captured by fetch-snapshot.sh   [default: empty sky]
+Data source (pick one; the default is an empty sky)
+  --snapshot FILE      serve data captured earlier by fetch-snapshot.sh. Offline.
+  --internet           poll adsb.lol and aviationweather.gov live, and keep polling.
+                       Needs internet; the display still sees an ordinary Stratux.
+
   --port P             port to listen on                    [default: 8080]
-  --lat D --lon D      own-ship position; overrides the snapshot's origin
+  --lat D --lon D      centre position: where to poll around, and where own-ship sits
+  --radius NM          how far to look, --internet only     [default: 50, max 250]
+  --poll SECS          traffic poll interval                [default: 5]
+  --weather-poll SECS  weather poll interval                [default: 600]
   --fly TRACK@SPEED    fly own-ship, e.g. --fly 090@110      [default: stationary]
 
 Fault injection
@@ -41,9 +55,13 @@ Then point the display at it:
 
 struct Args {
     snapshot: Option<PathBuf>,
+    internet: bool,
     port: u16,
     lat: Option<f64>,
     lon: Option<f64>,
+    radius_nm: u32,
+    poll_s: f64,
+    weather_poll_s: f64,
     fly: Option<(f64, f64)>,
     faults: server::Faults,
 }
@@ -52,9 +70,16 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             snapshot: None,
+            internet: false,
             port: 8080,
             lat: None,
             lon: None,
+            radius_nm: 50,
+            // Five seconds is a compromise, not a limit of the feed: it is often enough that the
+            // flown-forward positions never drift far from the truth, and rare enough to be a
+            // reasonable thing to do to a free community service indefinitely.
+            poll_s: 5.0,
+            weather_poll_s: 600.0,
             fly: None,
             faults: server::Faults::default(),
         }
@@ -75,6 +100,10 @@ fn parse_args() -> Result<Option<Args>> {
                 return Ok(None);
             }
             "--snapshot" => args.snapshot = Some(PathBuf::from(value()?)),
+            "--internet" => args.internet = true,
+            "--radius" => args.radius_nm = value()?.parse().context("bad --radius")?,
+            "--poll" => args.poll_s = value()?.parse().context("bad --poll")?,
+            "--weather-poll" => args.weather_poll_s = value()?.parse().context("bad --weather-poll")?,
             "--port" => args.port = value()?.parse().context("bad --port")?,
             "--lat" => args.lat = Some(value()?.parse().context("bad --lat")?),
             "--lon" => args.lon = Some(value()?.parse().context("bad --lon")?),
@@ -109,6 +138,23 @@ fn parse_args() -> Result<Option<Args>> {
             other => bail!("unrecognised argument {other:?}\n\n{USAGE}"),
         }
     }
+    if args.internet {
+        if args.snapshot.is_some() {
+            bail!("--internet and --snapshot are different data sources; pick one");
+        }
+        // The feed clamps silently past this, which would make the server quietly not cover the
+        // area it was asked for.
+        if args.radius_nm == 0 || args.radius_nm > 250 {
+            bail!("--radius must be between 1 and 250 nm");
+        }
+        if args.poll_s < 1.0 {
+            bail!("--poll below 1 s is not polite to a free service, and the targets are flown \
+                   forward between polls anyway");
+        }
+        if args.weather_poll_s < 60.0 {
+            bail!("--weather-poll below 60 s is pointless: reports update far more slowly");
+        }
+    }
     Ok(Some(args))
 }
 
@@ -126,6 +172,9 @@ async fn main() -> Result<()> {
     };
 
     let (mut origin, targets, weather) = match &args.snapshot {
+        // --internet starts empty and fills on the first poll, a second or two later. That is not
+        // a gap to apologise for: it is what a real Stratux looks like at power-on, and the
+        // display's "waiting" states deserve to be seen.
         Some(path) => {
             let bytes = std::fs::read(path)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -141,7 +190,9 @@ async fn main() -> Result<()> {
             ((snap.origin.lat, snap.origin.lon), targets, weather)
         }
         None => {
-            tracing::info!("no snapshot: serving an empty sky");
+            if !args.internet {
+                tracing::info!("no snapshot: serving an empty sky");
+            }
             ((40.7784, -74.3343), Vec::new(), Vec::new())
         }
     };
@@ -168,12 +219,21 @@ async fn main() -> Result<()> {
         tracing::warn!(every = n, "emitting malformed frames (fault injection)");
     }
 
+    let feeds = args.internet.then(|| feeds::Feeds {
+        lat: origin.0,
+        lon: origin.1,
+        radius_nm: args.radius_nm,
+        traffic_every: Duration::from_secs_f64(args.poll_s),
+        weather_every: Duration::from_secs_f64(args.weather_poll_s),
+    });
+
     let world = World::new(ownship, targets, weather);
     server::serve(
         world,
         server::Config {
             port: args.port,
             faults: args.faults,
+            feeds,
         },
     )
     .await

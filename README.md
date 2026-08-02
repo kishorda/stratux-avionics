@@ -258,7 +258,7 @@ device.
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 
-250 tests passing, clippy clean.
+258 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -389,20 +389,35 @@ from a snapshot of **real** free public data — aircraft from adsb.lol, METARs 
 aviationweather.gov. See [`docs/free-aviation-data.md`](docs/free-aviation-data.md) for the
 sources, their terms, and what was rejected.
 
+It runs two ways.
+
+**Internet mode** keeps polling, so the display shows what is actually flying right now:
+
 ```sh
-# Once, with internet. Defaults to 50 nm around Morristown NJ — the outdoor capture site.
-./tools/mock-stratux/fetch-snapshot.sh --out /tmp/snapshot.json
-
-# Then offline, for as long as you like.
-cargo run --release -p mock-stratux -- --snapshot /tmp/snapshot.json
-
-# The display takes its ordinary live path; nothing about it knows this is a mock.
+cargo run --release -p mock-stratux -- --internet --lat 40.7784 --lon -74.3343 --radius 50
 cargo run --release --features desktop -p avionics -- --window --host 127.0.0.1 --port 8080
 ```
 
-A snapshot of the New York metro area is 204 aircraft, 26 METARs, 10 TAFs and 4 PIREPs. Targets
-are flown forward along their reported track and speed, so the picture stays alive rather than
-freezing and going grey as the dead-reckoner gives up on it.
+**Snapshot mode** captures once and serves it forever, with no network at all afterwards:
+
+```sh
+./tools/mock-stratux/fetch-snapshot.sh --out /tmp/snapshot.json     # once, with internet
+cargo run --release -p mock-stratux -- --snapshot /tmp/snapshot.json
+```
+
+Either way **the display is unmodified** — it takes its ordinary live WebSocket path and has no
+idea it is not talking to a Pi. That is the whole point: no `--internet` flag on the display, no
+HTTP client in the aircraft binary. `cargo tree -p avionics` shows no `reqwest`, `rustls` or
+`hyper`.
+
+New York metro is about 210 aircraft and 40 weather products. Targets are flown forward along
+their reported track and speed between polls, so the picture stays alive instead of freezing and
+going grey as the dead-reckoner gives up on it — and an arriving poll snaps them back to the
+truth, exactly as a real ADS-B update does.
+
+Polling defaults to 5 s for traffic and 10 minutes for weather, tunable with `--poll` and
+`--weather-poll`. Both have floors: these are free community services, and the flown-forward
+motion means a faster poll buys nothing anyway.
 
 **Snapshots are gitignored on purpose.** adsb.lol's data is ODbL — attribution and share-alike —
 which does not match this repo's licensing. aviationweather.gov is a US Government work and public

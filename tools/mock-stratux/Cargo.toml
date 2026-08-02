@@ -19,3 +19,7 @@ futures-util = { workspace = true }
 # a dev tool and is never cross-compiled: `deploy.sh` builds `-p avionics`, so nothing here reaches
 # the aircraft. `cargo tree -p avionics` still shows the shipping build unchanged.
 tokio-tungstenite = { workspace = true }
+# --internet only. rustls rather than native-tls so there is no OpenSSL build dependency, and no
+# default features so this does not drag in a second async runtime or a cookie store. This crate
+# is never cross-compiled — deploy.sh builds `-p avionics` — so none of it reaches the aircraft.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }

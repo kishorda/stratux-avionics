@@ -53,6 +53,23 @@ and radial distance`. The bbox is required.
 | **NOAA NEXRAD mosaics** | Free and public domain, but delivered as imagery or Level II/III radar products, not as the FIS-B block structure Stratux publishes. Converting one to the other means writing the geo-referencing this project deliberately does not have to write, because Stratux hands over `NEXRADBlock` already decoded. Left alone — see below. |
 | **OurAirports, FAA NASR** | Free airport and airspace databases. Genuinely useful, and no use here: Phase 1 has no basemap, so there is nothing to put them on. |
 
+## Two ways to use them
+
+`mock-stratux --internet` polls both services continuously and serves the result as Stratux
+WebSockets. `fetch-snapshot.sh` + `--snapshot` captures once and serves it offline forever.
+
+The conversions are shared, so the two paths cannot drift: internet mode assembles each poll into
+the same envelope a snapshot file uses and runs it through the same code.
+
+Polling is deliberately slower than publishing — 5 s for traffic, 10 minutes for weather, with
+floors enforced in the CLI. The world model flies targets forward in between, so the display still
+sees a fresh position every second. That is not a trick to disguise the poll rate: it is the same
+dead reckoning the display does, and the arriving fix snaps the target back to the truth.
+
+A failed poll is logged and swallowed. The last good picture keeps being served and flown forward
+until the next one succeeds, because a wifi blip that blanked the display would have you debugging
+the mock instead of the thing you meant to test.
+
 ## What the mock still cannot do
 
 **NEXRAD.** The precipitation underlay is the one part of the display no free service can seed,
@@ -66,7 +83,8 @@ structures. That is the right tool for it, and the split is worth stating plainl
 
 | Wanted | Use |
 | --- | --- |
-| Real traffic, real weather text, real density | `mock-stratux` with a snapshot |
+| What is flying right now | `mock-stratux --internet` |
+| Real traffic and weather, repeatable, offline | `mock-stratux --snapshot` |
 | The live WebSocket path, reconnect, staleness, malformed frames | `mock-stratux` — nothing else exercises it |
 | NEXRAD underlay, deterministic scenarios, a guaranteed conflict | `replay synth` |
 | A specific recorded moment, byte for byte | `replay record` / `--replay` |
@@ -74,7 +92,14 @@ structures. That is the right tool for it, and the split is worth stating plainl
 ## Terms, briefly
 
 Both services are free to query and neither needs an account, but they are somebody else's
-infrastructure. `fetch-snapshot.sh` is built to be run **once per test scenario**, not in a loop:
-one call per source, a 30-second timeout, an identifying user agent, and everything after it runs
-from the file on disk. That also happens to be this project's existing house rule for anything
-that can only be observed live — capture once, move the analysis offline.
+infrastructure, given away for nothing. Two habits follow from that.
+
+`fetch-snapshot.sh` makes **one call per source** and everything afterwards runs from the file on
+disk — which is also this project's existing house rule for anything that can only be observed
+live: capture once, move the analysis offline. Prefer it when the data does not need to be current.
+
+`--internet` does poll in a loop, so it is built to be a light one: 5 s for traffic and 10 minutes
+for weather by default, floors in the CLI that refuse anything faster, a 20-second timeout, an
+identifying user agent, and no retry storm on failure. A faster poll would buy nothing anyway,
+because the targets are flown forward between polls and the display already sees a fresh position
+every second.
