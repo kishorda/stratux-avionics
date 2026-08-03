@@ -48,6 +48,20 @@ impl FlightCategory {
         }
     }
 
+    /// Colour for a badge or a readout.
+    ///
+    /// Green is deliberate for VFR: it is the one state that needs no action, and colouring it
+    /// like everything else would waste the strongest signal on screen. Lives here rather than on
+    /// a page because both the weather list and the airport card show it, and two places
+    /// disagreeing about what VFR looks like is exactly the kind of drift worth designing out.
+    pub fn colour(self, theme: &crate::Theme) -> avionics_gfx::femtovg::Color {
+        match self {
+            Self::Vfr => theme.good,
+            Self::Mvfr => theme.caution,
+            Self::Ifr | Self::Lifr => theme.warning,
+        }
+    }
+
     /// Ceiling alone, in feet AGL. FAA thresholds.
     fn from_ceiling(ft: u32) -> Self {
         match ft {

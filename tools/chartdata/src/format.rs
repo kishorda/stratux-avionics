@@ -7,8 +7,8 @@
 //! ```text
 //!   header      96 B   magic, version, counts, section offsets, grid, effective date
 //!   buckets      8 B   per 1x1 degree cell: first airport, airport count
-//!   airports    40 B   position, label, elevation, runway, kind, tier, flags,
-//!                      and ranges into the runway, frequency and string tables
+//!   airports    48 B   position, label, ICAO station, elevation, runway, kind, tier,
+//!                      flags, and ranges into the runway, frequency and string tables
 //!   airspace    40 B   bounding box, ring range, class, flags, lower/upper, label
 //!   rings        8 B   first vertex, vertex count
 //!   vertices     8 B   latitude and longitude, i32 micro-degrees
@@ -36,13 +36,14 @@ use anyhow::{bail, ensure, Result};
 
 pub const MAGIC: [u8; 8] = *b"AVCHART1";
 
-/// Version 2 added airport names, communication frequencies and runway orientations. The reader
-/// refuses anything else outright rather than guessing at a layout.
-pub const VERSION: u16 = 2;
+/// Version 3 added the ICAO station identifier, which is what joins an airport to the METARs
+/// already arriving over the Stratux weather socket. The reader refuses any other version outright
+/// rather than guessing at a layout.
+pub const VERSION: u16 = 3;
 
 pub const HEADER_LEN: usize = 96;
 pub const BUCKET_LEN: usize = 8;
-pub const AIRPORT_LEN: usize = 40;
+pub const AIRPORT_LEN: usize = 48;
 pub const AIRSPACE_LEN: usize = 40;
 pub const RING_LEN: usize = 8;
 pub const VERTEX_LEN: usize = 8;
@@ -220,6 +221,10 @@ pub struct Airport {
     pub lat_e6: i32,
     pub lon_e6: i32,
     pub label: String,
+    /// ICAO-style identifier, e.g. `KMMU`. **This is the join key for weather** — METARs arrive
+    /// keyed by station, and the short label the symbol carries is not that. Empty for the 18% of
+    /// fields with no such code, which are also the ones that never report.
+    pub station: String,
     pub name: String,
     pub elevation_ft: i16,
     /// Longest hard-surface runway in feet, 0 when there is none.
@@ -453,6 +458,7 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         out.extend_from_slice(&airport.lat_e6.to_le_bytes());
         out.extend_from_slice(&airport.lon_e6.to_le_bytes());
         out.extend_from_slice(&label_bytes(&airport.label));
+        out.extend_from_slice(&label_bytes(&airport.station));
         out.extend_from_slice(&airport.elevation_ft.to_le_bytes());
         out.extend_from_slice(&airport.runway_ft.to_le_bytes());
         out.push(airport.kind as u8);
@@ -640,8 +646,8 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
         let o = base + i * AIRPORT_LEN;
         let r = &bytes[o..o + AIRPORT_LEN];
 
-        let runway_first = u32::from_le_bytes(r[24..28].try_into()?) as usize;
-        let runway_count = r[23] as usize;
+        let runway_first = u32::from_le_bytes(r[32..36].try_into()?) as usize;
+        let runway_count = r[31] as usize;
         let mut runways = Vec::with_capacity(runway_count);
         for k in 0..runway_count {
             let ro = runway_base + (runway_first + k) * RUNWAY_LEN;
@@ -651,8 +657,8 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
             });
         }
 
-        let freq_first = u32::from_le_bytes(r[28..32].try_into()?) as usize;
-        let freq_count = r[37] as usize;
+        let freq_first = u32::from_le_bytes(r[36..40].try_into()?) as usize;
+        let freq_count = r[45] as usize;
         let mut frequencies = Vec::with_capacity(freq_count);
         for k in 0..freq_count {
             let fo = freq_base + (freq_first + k) * FREQUENCY_LEN;
@@ -662,8 +668,8 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
             });
         }
 
-        let name_off = u32::from_le_bytes(r[32..36].try_into()?) as usize;
-        let name_len = r[36] as usize;
+        let name_off = u32::from_le_bytes(r[40..44].try_into()?) as usize;
+        let name_len = r[44] as usize;
         let name = String::from_utf8_lossy(
             &bytes[string_base + name_off..string_base + name_off + name_len],
         )
@@ -675,23 +681,26 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
             label: String::from_utf8_lossy(&r[8..16])
                 .trim_end_matches('\0')
                 .to_string(),
+            station: String::from_utf8_lossy(&r[16..24])
+                .trim_end_matches('\0')
+                .to_string(),
             name,
-            elevation_ft: i16::from_le_bytes(r[16..18].try_into()?),
-            runway_ft: u16::from_le_bytes(r[18..20].try_into()?),
-            kind: match r[20] {
+            elevation_ft: i16::from_le_bytes(r[24..26].try_into()?),
+            runway_ft: u16::from_le_bytes(r[26..28].try_into()?),
+            kind: match r[28] {
                 0 => Kind::Large,
                 1 => Kind::Medium,
                 2 => Kind::Small,
                 3 => Kind::Heliport,
                 _ => Kind::Seaplane,
             },
-            tier: match r[21] {
+            tier: match r[29] {
                 0 => Tier::Major,
                 1 => Tier::Paved,
                 2 => Tier::Minor,
                 _ => Tier::Heliport,
             },
-            flags: r[22],
+            flags: r[30],
             runways,
             frequencies,
         });
@@ -769,6 +778,7 @@ mod tests {
             lat_e6: (lat * 1e6) as i32,
             lon_e6: (lon * 1e6) as i32,
             label: label.into(),
+            station: format!("K{label}"),
             name: format!("{label} Municipal Airport"),
             elevation_ft: 187,
             runway_ft: 5999,
@@ -797,6 +807,7 @@ mod tests {
                     runways: Vec::new(),
                     frequencies: Vec::new(),
                     name: String::new(),
+                    station: String::new(),
                     ..airport("06N", 41.431, -74.392, Tier::Paved)
                 },
             ],
@@ -857,6 +868,7 @@ mod tests {
             assert_eq!(found.tier, original.tier);
             assert_eq!(found.flags, original.flags);
             assert_eq!(found.name, original.name);
+            assert_eq!(found.station, original.station);
             assert_eq!(found.runways, original.runways);
             assert_eq!(found.frequencies, original.frequencies);
         }

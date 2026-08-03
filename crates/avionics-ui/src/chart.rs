@@ -8,8 +8,8 @@
 //! ```text
 //!   header      96 B   magic, version, counts, section offsets, grid, effective date
 //!   buckets      8 B   per 1x1 degree cell: first airport, airport count
-//!   airports    40 B   position, label, elevation, runway, kind, tier, flags,
-//!                      and ranges into the runway, frequency and string tables
+//!   airports    48 B   position, label, ICAO station, elevation, runway, kind, tier,
+//!                      flags, and ranges into the runway, frequency and string tables
 //!   airspace    40 B   bounding box, ring range, class, flags, lower/upper, label
 //!   rings        8 B   first vertex, vertex count
 //!   vertices     8 B   latitude and longitude, i32 micro-degrees
@@ -33,11 +33,11 @@ use anyhow::{bail, ensure, Result};
 use stratux_client::domain::LatLon;
 
 const MAGIC: [u8; 8] = *b"AVCHART1";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 const HEADER_LEN: usize = 96;
 const BUCKET_LEN: usize = 8;
-const AIRPORT_LEN: usize = 40;
+const AIRPORT_LEN: usize = 48;
 const AIRSPACE_LEN: usize = 40;
 const RING_LEN: usize = 8;
 const VERTEX_LEN: usize = 8;
@@ -175,6 +175,7 @@ pub struct Airport {
     pub index: u32,
     pub position: LatLon,
     label: [u8; LABEL_LEN],
+    station: [u8; LABEL_LEN],
     pub elevation_ft: i16,
     /// Longest hard-surface runway in feet, 0 when there is none.
     pub runway_ft: u16,
@@ -197,6 +198,19 @@ impl Airport {
             .position(|b| *b == 0)
             .unwrap_or(LABEL_LEN);
         std::str::from_utf8(&self.label[..end]).unwrap_or("")
+    }
+
+    /// ICAO-style identifier, e.g. `KMMU`, or empty when the field has none.
+    ///
+    /// **The join key for weather.** METARs arrive keyed by station and [`Airport::label`] is the
+    /// short name the symbol carries, which is deliberately not the same thing.
+    pub fn station(&self) -> &str {
+        let end = self
+            .station
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(LABEL_LEN);
+        std::str::from_utf8(&self.station[..end]).unwrap_or("")
     }
 
     pub fn hard_surface(&self) -> bool {
@@ -474,6 +488,8 @@ impl Chart {
         let o = self.airport_off + index * AIRPORT_LEN;
         let mut label = [0u8; LABEL_LEN];
         label.copy_from_slice(&self.bytes[o + 8..o + 16]);
+        let mut station = [0u8; LABEL_LEN];
+        station.copy_from_slice(&self.bytes[o + 16..o + 24]);
         Some(Airport {
             index: index as u32,
             position: LatLon::new(
@@ -481,28 +497,29 @@ impl Chart {
                 self.i32at(o + 4) as f64 / 1e6,
             ),
             label,
-            elevation_ft: i16::from_le_bytes([self.bytes[o + 16], self.bytes[o + 17]]),
-            runway_ft: u16::from_le_bytes([self.bytes[o + 18], self.bytes[o + 19]]),
-            kind: match self.bytes[o + 20] {
+            station,
+            elevation_ft: i16::from_le_bytes([self.bytes[o + 24], self.bytes[o + 25]]),
+            runway_ft: u16::from_le_bytes([self.bytes[o + 26], self.bytes[o + 27]]),
+            kind: match self.bytes[o + 28] {
                 0 => Kind::Large,
                 1 => Kind::Medium,
                 2 => Kind::Small,
                 3 => Kind::Heliport,
                 _ => Kind::Seaplane,
             },
-            tier: match self.bytes[o + 21] {
+            tier: match self.bytes[o + 29] {
                 0 => Tier::Major,
                 1 => Tier::Paved,
                 2 => Tier::Minor,
                 _ => Tier::Heliport,
             },
-            flags: self.bytes[o + 22],
-            runway_count: self.bytes[o + 23],
-            runway_first: self.u32at(o + 24),
-            freq_first: self.u32at(o + 28),
-            name_off: self.u32at(o + 32),
-            name_len: self.bytes[o + 36],
-            freq_count: self.bytes[o + 37],
+            flags: self.bytes[o + 30],
+            runway_count: self.bytes[o + 31],
+            runway_first: self.u32at(o + 32),
+            freq_first: self.u32at(o + 36),
+            name_off: self.u32at(o + 40),
+            name_len: self.bytes[o + 44],
+            freq_count: self.bytes[o + 45],
         })
     }
 
@@ -751,6 +768,9 @@ mod tests {
             .expect("MMU");
 
         assert_eq!(chart.name(&mmu), "Morristown Municipal Airport");
+        // The join key for weather, and deliberately not the label the symbol shows.
+        assert_eq!(mmu.station(), "KMMU");
+        assert_eq!(mmu.label(), "MMU");
         assert!(mmu.elevation_ft > 100 && mmu.elevation_ft < 400, "{}", mmu.elevation_ft);
 
         let runways = chart.runways(&mmu);
@@ -825,6 +845,41 @@ mod tests {
         assert_eq!(freqs, 11_199, "every frequency in the file should be reachable");
         assert_eq!(runways, 15_573, "every runway orientation should be reachable");
         assert!(names > 20_000, "only {names} airports have a name");
+    }
+
+    #[test]
+    fn station_identifiers_cover_the_fields_that_actually_report() {
+        // Weather is joined on this, so its coverage decides whether the card ever shows any.
+        // 82% overall is unremarkable; 100% of the major fields is the number that matters, since
+        // those are the ones with a METAR.
+        let Some(chart) = conus() else { return };
+        let mut with_station = 0usize;
+        let mut major = 0usize;
+        let mut major_with_station = 0usize;
+        for index in 0..chart.airport_count() {
+            let airport = chart.airport_at(index).expect("index in range");
+            let station = airport.station();
+            if !station.is_empty() {
+                assert!(station.len() <= 8, "{station} is too long for the field");
+                assert!(
+                    station.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "{station} is not an identifier"
+                );
+                with_station += 1;
+            }
+            if airport.tier == Tier::Major {
+                major += 1;
+                if !station.is_empty() {
+                    major_with_station += 1;
+                }
+            }
+        }
+        assert!(
+            with_station * 100 / chart.airport_count() >= 80,
+            "only {with_station} of {} have a station",
+            chart.airport_count()
+        );
+        assert_eq!(major_with_station, major, "every major field needs a station");
     }
 
     #[test]

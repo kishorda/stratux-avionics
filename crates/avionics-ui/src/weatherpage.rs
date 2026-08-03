@@ -164,7 +164,7 @@ pub fn draw(
                 .measure_text(0.0, 0.0, &heading, &label)
                 .map(|m| m.width())
                 .unwrap_or(0.0);
-            let mut badge = Paint::color(category_colour(ui, category));
+            let mut badge = Paint::color(category.colour(&ui.theme));
             badge.set_font(&[ui.font()]);
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);
@@ -274,16 +274,6 @@ pub fn format_age(age: std::time::Duration) -> String {
 }
 
 
-/// Colour for a flight category. Green is deliberate for VFR: it is the one state that needs no
-/// action, and colouring it like everything else would waste the strongest signal on screen.
-fn category_colour(ui: &Ui, category: metar::FlightCategory) -> avionics_gfx::femtovg::Color {
-    match category {
-        metar::FlightCategory::Vfr => ui.theme.good,
-        metar::FlightCategory::Mvfr => ui.theme.caution,
-        metar::FlightCategory::Ifr | metar::FlightCategory::Lifr => ui.theme.warning,
-    }
-}
-
 /// Draw the report body token by token, colouring the ones that carry a hazard.
 ///
 /// The text is otherwise unchanged — this highlights, it does not translate. Tokens are measured
@@ -382,7 +372,7 @@ fn draw_decoded(
         .unwrap_or(0.0);
     if matches!(item.product, WeatherProduct::Metar) {
         if let Some(category) = metar::summarise(&item.body).category {
-            let mut badge = Paint::color(category_colour(ui, category));
+            let mut badge = Paint::color(category.colour(&ui.theme));
             badge.set_font(&[ui.font()]);
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);

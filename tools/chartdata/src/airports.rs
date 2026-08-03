@@ -68,6 +68,7 @@ pub fn parse(
     let c_region = reader.column("iso_region")?;
     let c_gps = reader.column("gps_code")?;
     let c_local = reader.column("local_code")?;
+    let c_icao = reader.column("icao_code")?;
 
     let mut out = Vec::new();
     let mut stats = Stats {
@@ -152,6 +153,9 @@ pub fn parse(
             lat_e6: (lat * 1e6).round() as i32,
             lon_e6: (lon * 1e6).round() as i32,
             label,
+            // The join key for weather. `gps_code` is the ICAO-style code (KMMU); `icao_code` is
+            // populated for only 6% and is a fallback, not the first choice.
+            station: station(field(row, c_gps), field(row, c_icao), ident),
             name: field(row, c_name).trim().to_string(),
             elevation_ft: field(row, c_elev).parse::<f64>().unwrap_or(0.0).round() as i16,
             runway_ft: longest,
@@ -190,6 +194,42 @@ fn tier(kind: Kind, hard_runway_ft: u16) -> Tier {
         Kind::Small | Kind::Seaplane => Tier::Minor,
         Kind::Heliport => Tier::Heliport,
     }
+}
+
+/// The ICAO-style station identifier, or empty when the field has none.
+///
+/// **This is what joins an airport to its weather.** METARs arrive keyed by station — `KMMU`, not
+/// `MMU` — and the short label the symbol carries is deliberately not that. Deriving one from the
+/// other by prepending "K" is right most of the time and silently wrong sometimes, and "silently
+/// wrong" here means showing another airport's weather, which is worse than showing none.
+///
+/// `gps_code` covers 82% of CONUS fields, and 99% of those with an AWOS, ASOS or ATIS — which are
+/// exactly the fields that report.
+///
+/// `ident` is a **guarded** last resort. Two medium airports — Bakersfield (`KL45`) and Miami
+/// Homestead (`KX51`) — carry their ICAO code only in `ident`, with both dedicated columns empty.
+/// Taking `ident` unconditionally would instead give `7N7` a station of `7N7`, which is not an
+/// ICAO identifier at all, so it is accepted only when it looks like one: four characters
+/// beginning with `K`. That is the whole US convention and it cannot admit a short local code.
+fn station(gps_code: &str, icao_code: &str, ident: &str) -> String {
+    for candidate in [gps_code, icao_code] {
+        let candidate = candidate.trim();
+        if !candidate.is_empty() && candidate.len() <= crate::format::LABEL_LEN {
+            return candidate.to_ascii_uppercase();
+        }
+    }
+    let ident = ident.trim().to_ascii_uppercase();
+    if is_us_icao(&ident) {
+        return ident;
+    }
+    String::new()
+}
+
+/// Whether a string is a US ICAO identifier: `K` and three alphanumerics.
+fn is_us_icao(s: &str) -> bool {
+    s.len() == 4
+        && s.starts_with('K')
+        && s.chars().skip(1).all(|c| c.is_ascii_alphanumeric())
 }
 
 /// The shortest identifier a pilot would recognise, or `None` when there is not one.
@@ -703,6 +743,60 @@ he_heading_degT,he_displaced_threshold_ft\n";
         let (out, _) = parse(&a, &runways(""), &f).unwrap();
         assert_eq!(out[0].frequencies.len(), 1);
         assert_eq!(out[0].frequencies[0].khz, 124_250);
+    }
+
+    #[test]
+    fn the_station_is_the_icao_code_and_not_the_label() {
+        // The join key for weather. METARs arrive as KMMU; the symbol says MMU. Deriving one from
+        // the other by prepending "K" is right most of the time and silently wrong sometimes, and
+        // wrong here means showing another airport's weather.
+        let a = airports(
+            "1,\"KMMU\",\"medium_airport\",\"Morristown Municipal\",40.799,-74.415,187,\"NA\",\
+\"US\",\"US-NJ\",\"Morristown\",\"no\",,\"MMU\",\"KMMU\",\"MMU\",,,\n",
+        );
+        let (out, _) = parse(&a, &runways(""), &frequencies("")).unwrap();
+        assert_eq!(out[0].label, "MMU");
+        assert_eq!(out[0].station, "KMMU");
+    }
+
+    #[test]
+    fn a_field_with_no_icao_style_code_gets_an_empty_station() {
+        // 18% of CONUS fields have none — and they are also the ones that never report weather,
+        // so an empty station is the honest answer rather than a guess.
+        let a = airports(
+            "1,\"7N7\",\"small_airport\",\"Spitfire Aerodrome\",39.4,-75.3,60,\"NA\",\"US\",\
+\"US-NJ\",,\"no\",,,,\"7N7\",,,\n",
+        );
+        let (out, _) = parse(&a, &runways(""), &frequencies("")).unwrap();
+        assert_eq!(out[0].label, "7N7");
+        assert_eq!(out[0].station, "", "no gps_code and no icao_code means no station");
+    }
+
+    #[test]
+    fn ident_is_used_only_when_it_looks_like_an_icao_identifier() {
+        // Bakersfield and Miami Homestead are medium airports whose ICAO code lives only in
+        // `ident`, with both dedicated columns empty — the last two of 821 without a station.
+        // Taking `ident` unconditionally would instead give 7N7 a station of "7N7", which is not
+        // an ICAO identifier and could only ever match the wrong thing.
+        assert_eq!(station("", "", "KL45"), "KL45");
+        assert_eq!(station("", "", "KX51"), "KX51");
+        assert_eq!(station("", "", "7N7"), "");
+        assert_eq!(station("", "", "06N"), "");
+        assert_eq!(station("", "", "US-10378"), "");
+        assert_eq!(station("", "", "MMU"), "");
+        // And it never beats a real column.
+        assert_eq!(station("KMMU", "", "KXXX"), "KMMU");
+        assert_eq!(station("", "KMMU", "KXXX"), "KMMU");
+    }
+
+    #[test]
+    fn icao_code_is_the_fallback_when_there_is_no_gps_code() {
+        let a = airports(
+            "1,\"KXYZ\",\"medium_airport\",\"Somewhere\",40.1,-74.1,300,\"NA\",\"US\",\"US-NJ\",,\
+\"no\",\"KXYZ\",,,\"XYZ\",,,\n",
+        );
+        let (out, _) = parse(&a, &runways(""), &frequencies("")).unwrap();
+        assert_eq!(out[0].station, "KXYZ");
     }
 
     #[test]

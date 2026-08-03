@@ -536,7 +536,7 @@ impl Ui {
 
         // The card last of all, and above the traffic tags. It is on screen because the pilot
         // asked for it; a tag they did not ask for must not be allowed to cover it.
-        maplayer::draw_inspect(self, canvas, view, layout, projection.as_ref());
+        maplayer::draw_inspect(self, canvas, state, view, layout, projection.as_ref(), now);
 
         stats.airports_drawn = map.airports;
         stats.airspace_drawn = map.airspace;

@@ -23,11 +23,15 @@
 //! airspace here, and a recessive neutral grey says "background feature" more clearly than a fourth
 //! saturated hue would.
 
+use std::time::{Duration, Instant};
+
 use avionics_gfx::femtovg::{Align, Baseline, Paint, Path};
 use avionics_gfx::Canvas;
-use stratux_client::domain::LatLon;
+use stratux_client::domain::{LatLon, WeatherProduct};
+use stratux_client::AppState;
 
 use crate::chart::{self, Chart, Class, Tier};
+use crate::metar;
 use crate::projection::Projection;
 use crate::{Layout, MapLayers, Ui, ViewState};
 
@@ -56,10 +60,22 @@ const TICK_MAX_PX: f32 = 26.0;
 /// the lower-left corner rather than a whole edge — 290 of the 608 px of content area.
 const CARD_W: f32 = 290.0;
 const CARD_H: f32 = 76.0;
+/// With a weather line. The card grows rather than reserving a row that is empty at four fields
+/// in five.
+const CARD_H_WX: f32 = 92.0;
+
+/// Where the weather line's text starts, past the category badge. A fixed column rather than a
+/// measured one: `LIFR` is the widest label, and a measured indent would shuffle the line sideways
+/// every time the weather changed category.
+const CATEGORY_COLUMN_PX: f32 = 34.0;
 
 /// Frequencies shown on the card. Four fits the width; the file already sorts them so the four
 /// that matter come first.
 const MAX_CARD_FREQS: usize = 4;
+
+/// Baseline of each card row, from the top of the card. Named rather than written twice, so the
+/// layout test cannot drift away from what the drawing actually does.
+const CARD_ROWS: [f32; 5] = [14.0, 30.0, 46.0, 62.0, 78.0];
 
 /// What the layer put on screen. Folded into [`crate::FrameStats`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -319,14 +335,73 @@ pub fn hit_airport(
     best.map(|(_, airport)| airport)
 }
 
+/// The weather already on board for one station.
+///
+/// Nothing is fetched for this. METARs arrive over the Stratux weather socket and sit in
+/// [`AppState`] keyed by station; the card is a *join*, not a new data source. Which is also why
+/// it is free at a field with no report — most of them — and why the card says so rather than
+/// leaving a blank line that reads as a display that did not finish drawing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationWeather {
+    pub summary: metar::Summary,
+    /// How long ago the report was received. Not its issue time — that is in the text, and this is
+    /// the question the pilot is actually asking: is what I am looking at current?
+    pub age: Duration,
+    pub has_taf: bool,
+}
+
+/// Find the METAR and TAF for a station, if either is on board.
+///
+/// Pure and free of [`Canvas`], so the join is testable without a GPU. Returns `None` for a field
+/// with no station identifier at all rather than matching the empty string against everything.
+pub fn station_weather(
+    state: &AppState,
+    station: &str,
+    now: Instant,
+) -> Option<StationWeather> {
+    if station.is_empty() {
+        return None;
+    }
+    let mut metar_text: Option<&stratux_client::domain::WeatherText> = None;
+    let mut has_taf = false;
+    for text in state.weather.values() {
+        if !text.location.eq_ignore_ascii_case(station) {
+            continue;
+        }
+        match text.product {
+            WeatherProduct::Metar => metar_text = Some(text),
+            WeatherProduct::Taf => has_taf = true,
+            _ => {}
+        }
+    }
+    let text = metar_text?;
+    Some(StationWeather {
+        summary: metar::summarise(&text.body),
+        age: now.saturating_duration_since(text.received),
+        has_taf,
+    })
+}
+
+/// `"4m"`, `"1h12m"` — how long ago a report arrived.
+fn age_text(age: Duration) -> String {
+    let minutes = age.as_secs() / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h{:02}m", minutes / 60, minutes % 60)
+    }
+}
+
 /// Draw the inspect card. Call after the traffic, so a card the pilot asked for is not covered by
 /// a tag they did not.
 pub fn draw_inspect(
     ui: &Ui,
     canvas: &mut Canvas,
+    state: &AppState,
     view: &ViewState,
     layout: &Layout,
     projection: Option<&Projection>,
+    now: Instant,
 ) {
     let (Some(chart), Some(inspect)) = (ui.chart(), view.inspect) else {
         return;
@@ -336,10 +411,14 @@ pub fn draw_inspect(
     };
     let theme = &ui.theme;
 
+    // The weather line only exists when there is weather, so the card grows rather than reserving
+    // a row that is empty at four fields in five.
+    let weather = station_weather(state, airport.station(), now);
+
     // Lower-left of the content area. Own-ship is at the centre and the nearest threat is most
     // often ahead of it, so the bottom-left corner is the least costly place to spend.
     let width = CARD_W;
-    let height = CARD_H;
+    let height = if weather.is_some() { CARD_H_WX } else { CARD_H };
     let x0 = layout.content_left();
     let y0 = layout.footer_y0() - layout.margin - height;
 
@@ -363,12 +442,12 @@ pub fn draw_inspect(
     };
 
     // Identifier and, to the right, where it is from here.
-    line(canvas, 14.0, theme.font_size_normal, theme.text_primary, airport.label(), false);
+    line(canvas, CARD_ROWS[0], theme.font_size_normal, theme.text_primary, airport.label(), false);
     if let Some(projection) = projection {
         let (range, bearing) = projection.range_bearing(airport.position);
         line(
             canvas,
-            14.0,
+            CARD_ROWS[0],
             theme.font_size_small,
             theme.text_secondary,
             &format!("{:03.0}\u{00B0}  {:.1} nm", bearing, range),
@@ -378,7 +457,7 @@ pub fn draw_inspect(
 
     line(
         canvas,
-        30.0,
+        CARD_ROWS[1],
         theme.font_size_tag,
         theme.text_secondary,
         chart.name(&airport),
@@ -397,7 +476,7 @@ pub fn draw_inspect(
             facts.push_str("  LIT");
         }
     }
-    line(canvas, 46.0, theme.font_size_tag, theme.text_secondary, &facts, false);
+    line(canvas, CARD_ROWS[2], theme.font_size_tag, theme.text_secondary, &facts, false);
 
     // Frequencies, most useful first. 82% of fields have none, and saying so is better than a
     // blank line that reads as a display that did not finish drawing.
@@ -423,7 +502,57 @@ pub fn draw_inspect(
     } else {
         theme.text_primary
     };
-    line(canvas, 62.0, theme.font_size_tag, colour, &text, false);
+    line(canvas, CARD_ROWS[3], theme.font_size_tag, colour, &text, false);
+
+    // The weather line, from a METAR already on board. The category badge carries its own colour,
+    // so it is drawn separately from the rest of the line rather than inheriting one.
+    if let Some(weather) = weather {
+        let row = CARD_ROWS[4];
+        let mut rest = String::new();
+        match weather.summary.category {
+            Some(category) => {
+                let mut badge = Paint::color(category.colour(theme));
+                badge.set_font(&[ui.font()]);
+                badge.set_font_size(theme.font_size_tag);
+                badge.set_text_baseline(Baseline::Middle);
+                badge.set_text_align(Align::Left);
+                let _ = canvas.fill_text(x0 + pad, y0 + row, category.label(), &badge);
+            }
+            // Neither ceiling nor visibility could be read — `summarise` never guesses. Naming the
+            // report without a category is better than a badge that implies VFR.
+            None => rest.push_str("METAR"),
+        }
+
+        if let Some(ceiling) = weather.summary.ceiling_ft {
+            rest.push_str(&format!("  {ceiling} ft"));
+        }
+        if let Some(visibility) = weather.summary.visibility_sm {
+            rest.push_str(&format!("  {} sm", format_visibility(visibility)));
+        }
+        rest.push_str(&format!("  {}", age_text(weather.age)));
+        if weather.has_taf {
+            rest.push_str("  TAF");
+        }
+
+        // Indented past the badge by a fixed amount rather than by measuring it: LIFR is the
+        // widest label and the column has to be stable as the category changes, or the line
+        // shuffles sideways every time the weather does.
+        let mut paint = Paint::color(theme.text_secondary);
+        paint.set_font(&[ui.font()]);
+        paint.set_font_size(theme.font_size_tag);
+        paint.set_text_baseline(Baseline::Middle);
+        paint.set_text_align(Align::Left);
+        let _ = canvas.fill_text(x0 + pad + CATEGORY_COLUMN_PX, y0 + row, &rest, &paint);
+    }
+}
+
+/// Visibility without a trailing `.0`, since whole miles are the common case.
+fn format_visibility(sm: f32) -> String {
+    if (sm - sm.round()).abs() < 0.05 {
+        format!("{:.0}", sm.round())
+    } else {
+        format!("{sm:.2}")
+    }
 }
 
 /// Distance in nautical miles from own-ship to the furthest corner of the content area.
@@ -697,6 +826,156 @@ mod tests {
             }
         }
         assert!(probed > 3, "expected several airports near Morristown, probed {probed}");
+    }
+
+    fn weather_state(reports: &[(&str, &str, &str)]) -> AppState {
+        use stratux_client::domain::WeatherText;
+        let mut state = AppState::default();
+        for (product, location, body) in reports {
+            let text = WeatherText {
+                product: match *product {
+                    "METAR" => WeatherProduct::Metar,
+                    "TAF" => WeatherProduct::Taf,
+                    other => WeatherProduct::Other(other.to_string()),
+                },
+                location: location.to_string(),
+                time: "021656Z".into(),
+                body: body.to_string(),
+                received: Instant::now(),
+            };
+            state.weather.insert(
+                stratux_client::state::WeatherKey {
+                    product: text.product.label().to_string(),
+                    location: text.location.clone(),
+                    discriminator: String::new(),
+                },
+                text,
+            );
+        }
+        state
+    }
+
+    #[test]
+    fn a_stations_metar_is_found_by_its_icao_identifier() {
+        // The join the whole feature rests on: the symbol says MMU, the METAR says KMMU.
+        let state = weather_state(&[(
+            "METAR",
+            "KMMU",
+            "METAR KMMU 021656Z 15014KT 10SM BKN031 27/22 A2993",
+        )]);
+        let now = Instant::now();
+
+        let found = station_weather(&state, "KMMU", now).expect("KMMU has a METAR");
+        assert_eq!(found.summary.ceiling_ft, Some(3100));
+        assert_eq!(found.summary.visibility_sm, Some(10.0));
+        assert_eq!(found.summary.category, Some(metar::FlightCategory::Vfr));
+        assert!(!found.has_taf);
+
+        // The short label must not match, or every airport would show its neighbour's weather.
+        assert!(station_weather(&state, "MMU", now).is_none());
+        assert!(station_weather(&state, "KEWR", now).is_none());
+    }
+
+    #[test]
+    fn the_shipped_file_joins_a_real_metar_to_a_real_airport() {
+        // The end-to-end join, through the actual file rather than a hand-built record: look up
+        // Morristown the way a tap does, take the station off it, and match a METAR keyed the way
+        // Stratux keys them. If the station field or the lookup ever drifts, this is the test that
+        // notices — the unit tests above would all still pass with a chart that had no stations.
+        let Some(chart) = conus() else { return };
+        let p = morristown(10.0);
+        let mmu = chart
+            .airports_in(&chart::bounds_around(p.origin(), 20.0), chart::Tier::Minor)
+            .into_iter()
+            .find(|a| a.label() == "MMU")
+            .expect("MMU");
+
+        let state = weather_state(&[(
+            "METAR",
+            "KMMU",
+            "METAR KMMU 021656Z 15014G21KT 4SM BR OVC008 22/21 A2993",
+        )]);
+        let found = station_weather(&state, mmu.station(), Instant::now())
+            .expect("the shipped file must carry KMMU as MMU's station");
+        assert_eq!(found.summary.category, Some(metar::FlightCategory::Ifr));
+        assert_eq!(found.summary.ceiling_ft, Some(800));
+        assert_eq!(found.summary.visibility_sm, Some(4.0));
+    }
+
+    #[test]
+    fn a_field_with_no_station_identifier_matches_nothing() {
+        // 18% of fields have no ICAO code. An empty string must not match an empty `location`,
+        // or those fields would all show the same arbitrary report.
+        let state = weather_state(&[("METAR", "", "METAR 021656Z 10SM CLR")]);
+        assert!(station_weather(&state, "", Instant::now()).is_none());
+    }
+
+    #[test]
+    fn a_taf_alone_is_not_reported_as_weather() {
+        // The card's line is built from the METAR. A TAF on its own is a forecast with no
+        // observation behind it, and showing a category derived from nothing would be a guess.
+        let state = weather_state(&[("TAF", "KMMU", "TAF KMMU 021543Z 0216/0318 15010KT P6SM")]);
+        assert!(station_weather(&state, "KMMU", Instant::now()).is_none());
+    }
+
+    #[test]
+    fn a_taf_alongside_a_metar_is_flagged() {
+        let state = weather_state(&[
+            ("METAR", "KEWR", "METAR KEWR 021651Z 18008KT 10SM FEW250 28/19 A2994"),
+            ("TAF", "KEWR", "TAF KEWR 021543Z 0216/0318 15010G18KT P6SM FEW070"),
+        ]);
+        let found = station_weather(&state, "KEWR", Instant::now()).expect("KEWR");
+        assert!(found.has_taf);
+    }
+
+    #[test]
+    fn the_station_match_is_case_insensitive() {
+        let state = weather_state(&[("METAR", "kmmu", "METAR KMMU 021656Z 10SM CLR 27/22")]);
+        assert!(station_weather(&state, "KMMU", Instant::now()).is_some());
+    }
+
+    #[test]
+    fn an_unreadable_report_yields_no_category_rather_than_vfr() {
+        // `summarise` never guesses, and the card names the product instead of showing a badge.
+        // Implying VFR from a report that could not be read is the failure worth designing out.
+        let state = weather_state(&[("METAR", "KAAA", "METAR KAAA 021656Z AUTO")]);
+        let found = station_weather(&state, "KAAA", Instant::now()).expect("KAAA");
+        assert_eq!(found.summary.category, None);
+    }
+
+    #[test]
+    fn report_age_reads_the_way_a_pilot_would_say_it() {
+        assert_eq!(age_text(Duration::from_secs(0)), "0m");
+        assert_eq!(age_text(Duration::from_secs(59)), "0m");
+        assert_eq!(age_text(Duration::from_secs(4 * 60)), "4m");
+        assert_eq!(age_text(Duration::from_secs(59 * 60)), "59m");
+        assert_eq!(age_text(Duration::from_secs(60 * 60)), "1h00m");
+        assert_eq!(age_text(Duration::from_secs(72 * 60)), "1h12m");
+    }
+
+    #[test]
+    fn whole_miles_of_visibility_lose_the_decimal() {
+        assert_eq!(format_visibility(10.0), "10");
+        assert_eq!(format_visibility(3.0), "3");
+        assert_eq!(format_visibility(0.5), "0.50");
+        assert_eq!(format_visibility(1.75), "1.75");
+    }
+
+    #[test]
+    fn the_card_grows_for_weather_and_still_clears_the_footer() {
+        // The taller card is the one that can collide with the bar below it.
+        let l = layout();
+        let x0 = l.content_left();
+        let y0 = l.footer_y0() - l.margin - CARD_H_WX;
+        assert!(y0 > l.strip_y0(), "the weather card starts above the status bar");
+        assert!(y0 + CARD_H_WX < l.footer_y0(), "the weather card overlaps the footer");
+        assert!(x0 + CARD_W <= l.content_x1);
+        // Every row has somewhere to sit inside the card it belongs to.
+        for (index, row) in CARD_ROWS.iter().enumerate() {
+            let card = if index == 4 { CARD_H_WX } else { CARD_H };
+            assert!(*row < card, "row {index} at {row} is outside a card of {card}");
+            assert!(*row > 0.0, "row {index} is above the card");
+        }
     }
 
     #[test]

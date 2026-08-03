@@ -142,7 +142,7 @@ airspace (7 pages)  1486 features -> 1408 kept
     dropped: 0 not class B/C/D, 78 outside the keep box, 0 no usable geometry
     vertices: 287618 -> 128479 (44.7%) at 10 m tolerance
 
-conus.chart (2514 KiB), format v2
+conus.chart (2676 KiB), format v3
     20736 airports, 1408 airspace polygons, 1410 rings, 128479 vertices
     15573 runway orientations, 11199 frequencies, 474 KiB of names
     grid 26x58 cells from 24, -125
@@ -229,6 +229,7 @@ what decides whether a feature is buildable, so it is measured rather than assum
 | | Coverage | Notes |
 | --- | --- | --- |
 | Name | 20,736 (100%) | 474 KiB of the file; truncated at 40 bytes on a character boundary |
+| **ICAO station** | **20,056 (97%)** | the join key for weather — see below |
 | Elevation | 96% | from `elevation_ft` |
 | Longest hard runway | — | already used for the tier |
 | **Runway orientations** | **13,104 airports (63%), 15,573 entries** | see below |
@@ -246,6 +247,39 @@ instead (`N`, `NE`, `NW`) — turf strips and seaplane lanes — so those are ha
 Parallel and reciprocal runways collapse: 9L and 9R are one line drawn twice, and so are 05 and 23.
 That takes KORD's eleven runways down to the handful of distinct angles worth drawing. The maximum
 anywhere is six; 10,217 airports have exactly one.
+
+### Weather on the card is a join, not a new source
+
+METARs are already on board. They arrive over the Stratux `/weather` socket and sit in `AppState`
+keyed by station, which is exactly what the card needs — so tapping an airport costs one lookup and
+no fetch, and it works with no internet on the aircraft.
+
+The join key is the problem. METARs are keyed `KMMU`; the symbol says `MMU`, because the label is
+deliberately the short one a pilot says. Deriving one from the other by prepending `K` is right most
+of the time and **silently wrong sometimes**, and wrong here means showing another airport's
+weather. So the ICAO identifier is carried in the file as its own field — the reason for format v3.
+
+Coverage, which decides whether the feature ever shows anything:
+
+| | |
+| --- | --- |
+| `gps_code` | 82% of CONUS fields |
+| Major airports (large + medium) | **821 of 821** |
+| Fields with an AWOS, ASOS or ATIS | **99%** |
+
+Those last two are the numbers that matter — a field with no weather station has no METAR to join
+to, so an empty identifier there costs nothing.
+
+Two of the 821 majors needed a guarded last resort. Bakersfield (`KL45`) and Miami Homestead
+(`KX51`) carry their ICAO code only in `ident`, with both dedicated columns empty. `ident` is
+accepted **only when it looks like a US ICAO identifier** — four characters beginning with `K` —
+because taking it unconditionally would give `7N7` a station of `7N7`, which is not an identifier
+and could only ever match the wrong thing.
+
+The card shows the flight category badge, ceiling, visibility, how long ago the report arrived, and
+whether a TAF is also on board. `metar::summarise` never guesses: when neither ceiling nor
+visibility can be read the card names the product instead of showing a badge, because implying VFR
+from a report that could not be parsed is the failure worth designing out.
 
 ### Two traps in the frequency file
 
@@ -272,9 +306,10 @@ on demand — a query allocates only the handful of results it returns.
 header         96 B   magic "AVCHART1", version, counts, section offsets,
                       grid origin and extent, FAA effective date
 bucket grid     8 B   per 1°x1° cell: airport_first, airport_count
-airports       40 B   lat/lon (i32 micro-degrees), 8-byte label, elevation,
-                      longest hard runway, kind, tier, flags, and ranges into
-                      the runway, frequency and string tables
+airports       48 B   lat/lon (i32 micro-degrees), 8-byte label, 8-byte ICAO
+                      station, elevation, longest hard runway, kind, tier,
+                      flags, and ranges into the runway, frequency and string
+                      tables
 airspace       40 B   bounding box, ring range, class, flags, lower/upper ft, label
 rings           8 B   vertex_first, vertex_count
 vertices        8 B   lat/lon, i32 micro-degrees
@@ -283,9 +318,9 @@ frequencies     8 B   kHz, kind
 strings          -    airport names, UTF-8, addressed by offset and length
 ```
 
-**Version 2** added the last three sections and the name. The reader refuses any other version
-outright rather than guessing at a layout — a v1 file loaded as v2 would read runway lengths as
-positions.
+**Version 2** added the runway, frequency and string sections and the name; **version 3** added the
+ICAO station. The reader refuses any other version outright rather than guessing at a layout — a v2
+file read as v3 would take the elevation out of the middle of the station identifier.
 
 Micro-degrees give about 0.11 m of latitude resolution, which is two orders of magnitude finer than
 the 10 m simplification tolerance and therefore free of consequence.
