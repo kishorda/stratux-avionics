@@ -276,10 +276,27 @@ accepted **only when it looks like a US ICAO identifier** — four characters be
 because taking it unconditionally would give `7N7` a station of `7N7`, which is not an identifier
 and could only ever match the wrong thing.
 
-The card shows the flight category badge, ceiling, visibility, how long ago the report arrived, and
-whether a TAF is also on board. `metar::summarise` never guesses: when neither ceiling nor
-visibility can be read the card names the product instead of showing a badge, because implying VFR
-from a report that could not be parsed is the failure worth designing out.
+The card shows the flight category badge, **wind**, ceiling, visibility, how long ago the report
+arrived, and whether a TAF is also on board. `metar::summarise` never guesses: when neither ceiling
+nor visibility can be read the card names the product instead of showing a badge, because implying
+VFR from a report that could not be parsed is the failure worth designing out.
+
+Wind comes first on the line, ahead of ceiling and visibility. The card already names the runways
+two lines above, and wind against runway is the pairing a pilot is reading for.
+
+Three things about the wind group are worth stating, because each is a way to be quietly wrong:
+
+* **`36010KT` is not `00010KT`.** 360 is not folded to 0 — a pilot reads 360 as from the north, and
+  `000` is how the calm group is spelled. Collapsing them makes a 10 kt northerly look like no wind.
+* **Calm carries no direction.** `00000KT` renders as `CALM`, not as "from 000 degrees", which is a
+  direction the observation does not claim.
+* **The unit is read, not assumed.** US reports are in knots, but the group may legitimately arrive
+  as `MPS` or `KMH`. Reading 8 metres per second as 8 knots halves it — the same shape of error as
+  taking a flight level for feet, and just as invisible on a display.
+
+The parser matches the group's *shape* rather than searching for one, which is the same discipline
+the weather-phenomena matcher already uses. `R04L/2000FT`, `M08`, `10SM` and `A2993` all look
+wind-adjacent and none of them parse.
 
 ### Two traps in the frequency file
 

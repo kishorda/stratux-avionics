@@ -91,6 +91,103 @@ pub struct Summary {
     /// Lowest broken/overcast layer, or vertical visibility, in feet AGL.
     pub ceiling_ft: Option<u32>,
     pub visibility_sm: Option<f32>,
+    pub wind: Option<Wind>,
+}
+
+/// The surface wind group.
+///
+/// Speed is normalised to knots. US METARs report `KT`, but the group may legitimately arrive in
+/// `MPS` or `KMH`, and reading 8 metres per second as 8 knots halves it — the same shape of error
+/// as taking a flight level for feet, and just as invisible on a display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wind {
+    /// True degrees, or `None` when the direction is variable (`VRB`).
+    pub direction_deg: Option<u16>,
+    pub speed_kt: u16,
+    pub gust_kt: Option<u16>,
+}
+
+impl Wind {
+    pub fn is_calm(&self) -> bool {
+        self.speed_kt == 0
+    }
+
+    /// What a pilot would say: `"CALM"`, `"VRB 05"`, `"150° 14G21"`.
+    ///
+    /// Knots are not spelled out. The card has one line for the whole observation, and there is
+    /// nothing else on it a wind could be measured in.
+    pub fn text(&self) -> String {
+        if self.is_calm() {
+            return "CALM".into();
+        }
+        let direction = match self.direction_deg {
+            Some(deg) => format!("{deg:03}\u{00B0}"),
+            None => "VRB".into(),
+        };
+        match self.gust_kt {
+            Some(gust) => format!("{direction} {:02}G{gust}", self.speed_kt),
+            None => format!("{direction} {:02}", self.speed_kt),
+        }
+    }
+}
+
+/// Parse a surface wind group, or `None` if the token is not one.
+///
+/// Shape is checked strictly rather than searched for: three digits or `VRB`, two or three digits
+/// of speed, an optional `G` and gust, then the unit. That is what keeps a runway-visual-range
+/// group like `R04L/2000FT` or a temperature like `M08` from being read as a wind.
+pub fn parse_wind(token: &str) -> Option<Wind> {
+    // The unit is what identifies the group at all: a token with no speed unit on the end is not
+    // a wind, whatever else it looks like.
+    const UNITS: [(&str, f32); 3] = [("KT", 1.0), ("MPS", 1.943_844), ("KMH", 0.539_957)];
+    let (body, to_knots) = UNITS
+        .into_iter()
+        .find_map(|(suffix, factor)| token.strip_suffix(suffix).map(|b| (b, factor)))?;
+
+    // Direction: three digits, or VRB.
+    let (direction, rest) = if let Some(rest) = body.strip_prefix("VRB") {
+        (None, rest)
+    } else {
+        if body.len() < 3 || !body[..3].chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let deg: u16 = body[..3].parse().ok()?;
+        // Anything past 360 is not a direction. 360 is **not** folded to 0: a pilot reads "360"
+        // as from the north, and "000" is the calm group's spelling.
+        if deg > 360 {
+            return None;
+        }
+        (Some(deg), &body[3..])
+    };
+
+    let (speed_text, gust_text) = match rest.split_once('G') {
+        Some((s, g)) => (s, Some(g)),
+        None => (rest, None),
+    };
+
+    // Speed is two digits, or three when it is over 99 knots.
+    if !(2..=3).contains(&speed_text.len()) || !speed_text.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let speed_kt = (speed_text.parse::<f32>().ok()? * to_knots).round() as u16;
+
+    let gust_kt = match gust_text {
+        Some(g) => {
+            if !(2..=3).contains(&g.len()) || !g.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            Some((g.parse::<f32>().ok()? * to_knots).round() as u16)
+        }
+        None => None,
+    };
+
+    Some(Wind {
+        // A calm group is `00000KT`, and reporting that as "from 000 degrees" would be a
+        // direction the observation does not claim.
+        direction_deg: if speed_kt == 0 { None } else { direction },
+        speed_kt,
+        gust_kt,
+    })
 }
 
 /// Intensity and proximity qualifiers that may prefix a weather group.
@@ -225,6 +322,7 @@ pub fn summarise(body: &str) -> Summary {
     let tokens: Vec<&str> = body.split_whitespace().collect();
     let mut ceiling_ft: Option<u32> = None;
     let mut visibility_sm: Option<f32> = None;
+    let mut wind: Option<Wind> = None;
     let mut cavok = false;
     // A bare integer immediately before a fractional visibility is its whole part.
     let mut pending_whole: Option<f32> = None;
@@ -237,6 +335,16 @@ pub fn summarise(body: &str) -> Summary {
         if *token == "CAVOK" {
             cavok = true;
             continue;
+        }
+
+        // First wind group only. A METAR can carry a second one in remarks or a `TEMPO` group,
+        // and the surface observation is the one at the front.
+        if wind.is_none() {
+            if let Some(w) = parse_wind(token) {
+                wind = Some(w);
+                pending_whole = None;
+                continue;
+            }
         }
 
         if let Some((height, is_ceiling)) = sky_layer(token) {
@@ -281,6 +389,7 @@ pub fn summarise(body: &str) -> Summary {
             category: Some(FlightCategory::Vfr),
             ceiling_ft: None,
             visibility_sm: None,
+            wind,
         };
     }
 
@@ -306,6 +415,7 @@ pub fn summarise(body: &str) -> Summary {
         category,
         ceiling_ft,
         visibility_sm,
+        wind,
     }
 }
 
@@ -497,5 +607,127 @@ mod tests {
         // "TSNO" means the thunderstorm sensor is unavailable, not that there is a thunderstorm.
         let quiet = "KXXX 291853Z 09005KT 10SM CLR 20/10 A3000 RMK AO2 TSNO";
         assert_eq!(body_hazard(quiet), Hazard::None);
+    }
+
+    #[test]
+    fn a_wind_group_reads_direction_speed_and_gust() {
+        let w = parse_wind("15014KT").expect("plain wind");
+        assert_eq!(w.direction_deg, Some(150));
+        assert_eq!(w.speed_kt, 14);
+        assert_eq!(w.gust_kt, None);
+        assert_eq!(w.text(), "150\u{00B0} 14");
+
+        let g = parse_wind("15014G21KT").expect("gusting");
+        assert_eq!(g.gust_kt, Some(21));
+        assert_eq!(g.text(), "150\u{00B0} 14G21");
+
+        // Speed over 99 knots is three digits.
+        let strong = parse_wind("240105G130KT").expect("hurricane force");
+        assert_eq!((strong.direction_deg, strong.speed_kt, strong.gust_kt), (Some(240), 105, Some(130)));
+    }
+
+    #[test]
+    fn calm_is_not_reported_as_a_direction_of_zero() {
+        // `00000KT` is the calm group. Rendering it as "000 degrees" would state a direction the
+        // observation does not claim.
+        let w = parse_wind("00000KT").expect("calm");
+        assert!(w.is_calm());
+        assert_eq!(w.direction_deg, None);
+        assert_eq!(w.text(), "CALM");
+    }
+
+    #[test]
+    fn a_northerly_stays_360_and_is_not_folded_to_zero() {
+        // A pilot reads 360 as from the north; 000 is how calm is spelled. Folding one into the
+        // other would make a 10 knot northerly indistinguishable from no wind at a glance.
+        let w = parse_wind("36010KT").expect("northerly");
+        assert_eq!(w.direction_deg, Some(360));
+        assert_eq!(w.text(), "360\u{00B0} 10");
+    }
+
+    #[test]
+    fn a_variable_direction_says_so_rather_than_picking_one() {
+        let w = parse_wind("VRB03KT").expect("variable");
+        assert_eq!(w.direction_deg, None);
+        assert_eq!(w.speed_kt, 3);
+        assert_eq!(w.text(), "VRB 03");
+
+        let g = parse_wind("VRB05G20KT").expect("variable and gusting");
+        assert_eq!(g.text(), "VRB 05G20");
+    }
+
+    #[test]
+    fn metric_wind_units_are_converted_rather_than_read_as_knots() {
+        // US reports are in knots, but the group may legitimately arrive in MPS or KMH. Reading
+        // 8 metres per second as 8 knots halves it — the same shape of error as taking a flight
+        // level for feet, and just as invisible on a display.
+        let mps = parse_wind("05008MPS").expect("metres per second");
+        assert_eq!(mps.direction_deg, Some(50));
+        assert_eq!(mps.speed_kt, 16, "8 m/s is about 16 kt");
+
+        let kmh = parse_wind("09030KMH").expect("kilometres per hour");
+        assert_eq!(kmh.speed_kt, 16, "30 km/h is about 16 kt");
+    }
+
+    #[test]
+    fn tokens_that_merely_look_like_wind_are_rejected() {
+        // The same discipline as the weather groups: match the shape, do not search for it.
+        for token in [
+            "R04L/2000FT", // runway visual range
+            "M08",         // temperature
+            "10SM",        // visibility
+            "A2993",       // altimeter
+            "021656Z",     // issue time
+            "KMMU",        // the station
+            "METAR",
+            "AUTO",
+            "100KT",       // three digits then nothing to be a speed
+            "1KT",
+            "KT",
+            "37010KT",     // 370 is not a direction
+            "1501KT",      // one-digit speed
+            "15014G2KT",   // one-digit gust
+            "15014",       // no unit
+            "150X14KT",    // not digits
+            "",
+        ] {
+            assert!(parse_wind(token).is_none(), "{token:?} is not a wind group");
+        }
+    }
+
+    #[test]
+    fn summarise_takes_the_surface_wind_and_not_a_later_one() {
+        // A report can carry a second wind group in a TEMPO or BECMG section. The surface
+        // observation is the one at the front.
+        let s = summarise("METAR KMMU 021656Z 15014G21KT 10SM BKN031 27/22 A2993");
+        let w = s.wind.expect("wind");
+        assert_eq!((w.direction_deg, w.speed_kt, w.gust_kt), (Some(150), 14, Some(21)));
+
+        let two = summarise("METAR KMMU 021656Z 09005KT 10SM CLR 27/22 A2993 TEMPO 27020G35KT");
+        assert_eq!(two.wind.unwrap().speed_kt, 5, "the first group governs");
+    }
+
+    #[test]
+    fn a_report_with_no_wind_group_yields_no_wind() {
+        // Never a guess, the same rule the category follows.
+        assert_eq!(summarise("METAR KMMU 021656Z 10SM CLR 27/22 A2993").wind, None);
+        assert_eq!(summarise("").wind, None);
+    }
+
+    #[test]
+    fn a_wind_group_inside_remarks_is_not_read() {
+        // Remarks are free-form and full of things shaped like fields. The loop stops at RMK.
+        let s = summarise("METAR KMMU 021656Z 10SM CLR 27/22 A2993 RMK PK WND 27045/1652");
+        assert_eq!(s.wind, None);
+    }
+
+    #[test]
+    fn wind_does_not_disturb_the_category_reading() {
+        // The wind branch runs before visibility, so a regression there would swallow a token.
+        let s = summarise("METAR KMMU 021656Z 15014KT 1/2SM FG OVC002 21/21 A2993");
+        assert_eq!(s.category, Some(FlightCategory::Lifr));
+        assert_eq!(s.ceiling_ft, Some(200));
+        assert_eq!(s.visibility_sm, Some(0.5));
+        assert_eq!(s.wind.unwrap().speed_kt, 14);
     }
 }

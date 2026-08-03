@@ -152,8 +152,9 @@ field you would actually talk to — and the rest say `no published frequency` r
 blank line.
 
 **If a METAR for that station is already on board, the card grows a weather line**: flight-category
-badge, ceiling, visibility, how long ago the report arrived, and `TAF` when a forecast is on board
-too. Nothing is fetched for this — the reports are already arriving over the Stratux weather socket
+badge, wind, ceiling, visibility, how long ago the report arrived, and `TAF` when a forecast is on
+board too. Wind sits first, because the card names the runways two lines above and wind against
+runway is the pairing you are actually reading for — `CALM`, `VRB 05`, or `150° 14G21`. Nothing is fetched for this — the reports are already arriving over the Stratux weather socket
 and sitting in `AppState` keyed by station, so it works with no internet on the aircraft and costs
 one lookup. What it needed was the chart to carry the **ICAO** identifier: METARs are keyed `KMMU`
 and the symbol says `MMU`, and deriving one from the other by prepending `K` is right most of the
@@ -344,7 +345,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **renders offscreen** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks, and tap-to-inspect with frequencies and station weather; drawn and measured on the desktop, **not yet seen on the panel** |
 
-369 tests passing, clippy clean.
+382 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a

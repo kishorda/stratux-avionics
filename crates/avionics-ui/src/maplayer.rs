@@ -508,30 +508,13 @@ pub fn draw_inspect(
     // so it is drawn separately from the rest of the line rather than inheriting one.
     if let Some(weather) = weather {
         let row = CARD_ROWS[4];
-        let mut rest = String::new();
-        match weather.summary.category {
-            Some(category) => {
-                let mut badge = Paint::color(category.colour(theme));
-                badge.set_font(&[ui.font()]);
-                badge.set_font_size(theme.font_size_tag);
-                badge.set_text_baseline(Baseline::Middle);
-                badge.set_text_align(Align::Left);
-                let _ = canvas.fill_text(x0 + pad, y0 + row, category.label(), &badge);
-            }
-            // Neither ceiling nor visibility could be read — `summarise` never guesses. Naming the
-            // report without a category is better than a badge that implies VFR.
-            None => rest.push_str("METAR"),
-        }
-
-        if let Some(ceiling) = weather.summary.ceiling_ft {
-            rest.push_str(&format!("  {ceiling} ft"));
-        }
-        if let Some(visibility) = weather.summary.visibility_sm {
-            rest.push_str(&format!("  {} sm", format_visibility(visibility)));
-        }
-        rest.push_str(&format!("  {}", age_text(weather.age)));
-        if weather.has_taf {
-            rest.push_str("  TAF");
+        if let Some(category) = weather.summary.category {
+            let mut badge = Paint::color(category.colour(theme));
+            badge.set_font(&[ui.font()]);
+            badge.set_font_size(theme.font_size_tag);
+            badge.set_text_baseline(Baseline::Middle);
+            badge.set_text_align(Align::Left);
+            let _ = canvas.fill_text(x0 + pad, y0 + row, category.label(), &badge);
         }
 
         // Indented past the badge by a fixed amount rather than by measuring it: LIFR is the
@@ -542,8 +525,42 @@ pub fn draw_inspect(
         paint.set_font_size(theme.font_size_tag);
         paint.set_text_baseline(Baseline::Middle);
         paint.set_text_align(Align::Left);
-        let _ = canvas.fill_text(x0 + pad + CATEGORY_COLUMN_PX, y0 + row, &rest, &paint);
+        let _ = canvas.fill_text(
+            x0 + pad + CATEGORY_COLUMN_PX,
+            y0 + row,
+            weather_line(&weather),
+            &paint,
+        );
     }
+}
+
+/// Everything on the weather line except the category badge, which carries its own colour and is
+/// drawn separately into a fixed column.
+///
+/// Extracted so the content and the width are testable without a canvas. The order is deliberate:
+/// wind comes before ceiling and visibility because the card names the runways two lines above,
+/// and wind against runway is the pairing a pilot is reading for.
+fn weather_line(weather: &StationWeather) -> String {
+    let mut out = String::new();
+    // Neither ceiling nor visibility could be read — `summarise` never guesses, so there is no
+    // badge. Naming the product is better than a blank column that reads as a drawing fault.
+    if weather.summary.category.is_none() {
+        out.push_str("METAR");
+    }
+    if let Some(wind) = weather.summary.wind {
+        out.push_str(&format!("  {}", wind.text()));
+    }
+    if let Some(ceiling) = weather.summary.ceiling_ft {
+        out.push_str(&format!("  {ceiling} ft"));
+    }
+    if let Some(visibility) = weather.summary.visibility_sm {
+        out.push_str(&format!("  {} sm", format_visibility(visibility)));
+    }
+    out.push_str(&format!("  {}", age_text(weather.age)));
+    if weather.has_taf {
+        out.push_str("  TAF");
+    }
+    out
 }
 
 /// Visibility without a trailing `.0`, since whole miles are the common case.
@@ -941,6 +958,62 @@ mod tests {
         let state = weather_state(&[("METAR", "KAAA", "METAR KAAA 021656Z AUTO")]);
         let found = station_weather(&state, "KAAA", Instant::now()).expect("KAAA");
         assert_eq!(found.summary.category, None);
+    }
+
+    fn line_for(body: &str, age: Duration, has_taf: bool) -> String {
+        weather_line(&StationWeather {
+            summary: metar::summarise(body),
+            age,
+            has_taf,
+        })
+    }
+
+    #[test]
+    fn the_weather_line_leads_with_wind() {
+        // The card names the runways two lines above, and wind against runway is the pairing a
+        // pilot is reading for — so it comes before ceiling and visibility, not after.
+        let line = line_for(
+            "METAR KMMU 021656Z 15014G21KT 10SM BKN031 27/22 A2993",
+            Duration::from_secs(4 * 60),
+            false,
+        );
+        assert_eq!(line, "  150\u{00B0} 14G21  3100 ft  10 sm  4m");
+
+        let calm = line_for(
+            "METAR KMMU 021656Z 00000KT 10SM CLR 27/22 A2993",
+            Duration::from_secs(60),
+            true,
+        );
+        assert_eq!(calm, "  CALM  10 sm  1m  TAF");
+    }
+
+    #[test]
+    fn a_line_with_no_category_names_the_product_instead_of_going_blank() {
+        // No badge is drawn in this case, so without the word the line would start with a gap.
+        let line = line_for("METAR KAAA 021656Z 09005KT", Duration::from_secs(120), false);
+        assert!(line.starts_with("METAR"), "{line}");
+        assert!(line.contains("090\u{00B0} 05"), "{line}");
+    }
+
+    #[test]
+    fn the_worst_weather_line_still_fits_the_card() {
+        // Measured at 5.5 px per character for this font at `font_size_tag` on the rendered panel.
+        // The budget matters because the line grew once already and would grow again silently.
+        const PX_PER_CHAR: f32 = 5.5;
+        let worst = line_for(
+            "METAR KAAA 021656Z 36025G40KT 1/4SM FG VV001 M01/M02 A2960",
+            Duration::from_secs(72 * 60),
+            true,
+        );
+        let width = CATEGORY_COLUMN_PX + worst.chars().count() as f32 * PX_PER_CHAR;
+        let available = CARD_W - 7.0 * 2.0;
+        assert!(
+            width <= available,
+            "worst line {worst:?} needs {width:.0} px of {available:.0}"
+        );
+        // And it really is the worst case: gusting, three-digit ceiling, fractional visibility,
+        // an hours-old report and a TAF.
+        assert!(worst.contains('G') && worst.contains("TAF") && worst.contains('h'), "{worst}");
     }
 
     #[test]
