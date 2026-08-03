@@ -136,12 +136,15 @@ Class B — is 502.
 airports.csv        85824 rows -> 20736 kept
     dropped: 54448 outside CONUS, 7328 closed or balloonport,
              3312 no usable identifier, 0 no position
+    11199 frequencies at 3780 airports (18%),
+    15573 runway orientations at 13104 (63%)
 airspace (7 pages)  1486 features -> 1408 kept
     dropped: 0 not class B/C/D, 78 outside the keep box, 0 no usable geometry
     vertices: 287618 -> 128479 (44.7%) at 10 m tolerance
 
-conus.chart (1567 KiB)
+conus.chart (2514 KiB), format v2
     20736 airports, 1408 airspace polygons, 1410 rings, 128479 vertices
+    15573 runway orientations, 11199 frequencies, 474 KiB of names
     grid 26x58 cells from 24, -125
     FAA data effective 2026-07-09
     tiers: 821 major, 3151 paved, 10054 minor, 6710 heliport
@@ -218,22 +221,71 @@ measurement credited it with.
 | 2 | remaining fixed-wing + seaplane bases | 11,452 | 5 nm and in |
 | 3 | heliports | 6,710 | never, by default |
 
+## What each airport carries
+
+Beyond position and tier, the file holds three things the card and the symbols need. Coverage is
+what decides whether a feature is buildable, so it is measured rather than assumed:
+
+| | Coverage | Notes |
+| --- | --- | --- |
+| Name | 20,736 (100%) | 474 KiB of the file; truncated at 40 bytes on a character boundary |
+| Elevation | 96% | from `elevation_ft` |
+| Longest hard runway | — | already used for the tier |
+| **Runway orientations** | **13,104 airports (63%), 15,573 entries** | see below |
+| **Frequencies** | **3,780 airports (18%), 11,199 entries** | `UNI 2646, A/D 1529, AWOS 1320, CTR 993, CTAF 874, TWR 661, GND 602, CLR 489, ATIS 469, APP 215, DEP 130` |
+
+### Orientation comes from the identifier, not the heading column
+
+`runways.csv` has `le_heading_degT`, and it is populated for **under a third** of runways —
+endpoint coordinates likewise, at 32%. `le_ident` is populated for all of them and carries the same
+answer to 10 degrees, which is finer than a tick a few pixels long can show. `"5"` is 050, `"19"` is
+190, and the L/R/C suffixes are ignored. A further 1,041 CONUS runways are named by compass point
+instead (`N`, `NE`, `NW`) — turf strips and seaplane lanes — so those are handled too. Helipads
+(`H1`) have no orientation and get none.
+
+Parallel and reciprocal runways collapse: 9L and 9R are one line drawn twice, and so are 05 and 23.
+That takes KORD's eleven runways down to the handful of distinct angles worth drawing. The maximum
+anywhere is six; 10,217 airports have exactly one.
+
+### Two traps in the frequency file
+
+**Kilohertz, not megahertz.** 121.975 is a real 25 kHz channel, and stored as a float it formats as
+121.97 or 121.98 depending on which way it lands — one click off.
+
+**One radio is often listed twice.** At a non-towered field CTAF and UNICOM are usually the same
+number; at a towered one, so are CTAF and TWR. They are collapsed, and **tower wins over CTAF**
+even though CTAF sorts first for display: Rocky Mountain Metro publishes 118.6 under both names,
+and labelling a live tower frequency "CTAF" invites self-announcing on it.
+
+Anything the builder cannot name is carried but **not shown on the card**. A number with no label
+on an avionics display invites tuning a radio to it without knowing who answers. That is why `A/D`
+(airport advisory, 1,529 entries) and `CNTR` (ARTCC, 993) were given names of their own rather than
+left in the catch-all — they were its two biggest members, and both reach the card.
+
 ## File format
 
 One file, `conus.chart`, built on the dev machine and read once at startup. The Pi parses nothing:
-the format is fixed-layout little-endian so loading is a read into a `Vec`.
+the format is fixed-layout little-endian so loading is a read into a `Vec`, and records are decoded
+on demand — a query allocates only the handful of results it returns.
 
 ```
-header        64 B    magic "AVCHART1", version, counts, section offsets,
+header         96 B   magic "AVCHART1", version, counts, section offsets,
                       grid origin and extent, FAA effective date
-bucket grid   16 B    per 1°x1° cell: airport_first, airport_count,
-                      airspace_first, airspace_count
-airports      24 B    lat/lon (i32 micro-degrees), 8-byte label, elevation,
-                      longest hard runway, kind, tier, flags
-airspace      40 B    bounding box, ring range, class, flags, lower/upper ft, label
-rings          8 B    vertex_first, vertex_count
-vertices       8 B    lat/lon, i32 micro-degrees
+bucket grid     8 B   per 1°x1° cell: airport_first, airport_count
+airports       40 B   lat/lon (i32 micro-degrees), 8-byte label, elevation,
+                      longest hard runway, kind, tier, flags, and ranges into
+                      the runway, frequency and string tables
+airspace       40 B   bounding box, ring range, class, flags, lower/upper ft, label
+rings           8 B   vertex_first, vertex_count
+vertices        8 B   lat/lon, i32 micro-degrees
+runways         4 B   heading, length — one per distinct orientation
+frequencies     8 B   kHz, kind
+strings          -    airport names, UTF-8, addressed by offset and length
 ```
+
+**Version 2** added the last three sections and the name. The reader refuses any other version
+outright rather than guessing at a layout — a v1 file loaded as v2 would read runway lengths as
+positions.
 
 Micro-degrees give about 0.11 m of latitude resolution, which is two orders of magnitude finer than
 the 10 m simplification tolerance and therefore free of consequence.
@@ -243,6 +295,33 @@ airport query O(cells touched) instead of a scan of 20,736 records — at 30 Hz 
 several hundred thousand bounding-box tests a second, which is the same order as the entire current
 frame cost. Airspace is only 1,486 polygons with bounding boxes already in the record, so a linear
 scan is a few microseconds and a second index would be machinery earning nothing.
+
+## Tapping an airport, and the rule it bends
+
+The plan-view body was **deliberately inert**. Before the soft keys existed, a tap anywhere in it
+cycled the range, which meant a hand steadying itself against the panel in turbulence silently
+changed the range scale. That was removed, and the reasoning was written down: *a hand steadying
+itself against the panel should not change what is on it.*
+
+Tap-to-inspect relaxes the letter of that rule and keeps its substance. The rule was about
+**selections** — a brush against the glass changing the range or the heading reference is a real
+way to be misled about the traffic picture. A card is not a selection:
+
+* Only a tap **on an airport symbol** opens it, within 18 px. A tap on empty sky still does nothing,
+  which is where an accidental touch almost always lands.
+* It changes no selection, hides no traffic, and cannot move the pilot off the page.
+* Any next tap dismisses it, and it lapses on its own after 20 seconds — so it cannot be left
+  covering the picture by someone who has forgotten it is there.
+* It is drawn in the **lower-left** of the content area. Own-ship is at the centre and the nearest
+  threat is most often ahead of it, so that corner is the least costly to spend.
+
+What it costs is honest: the card covers about 290x76 px of a 608 px-wide content area while it is
+up. That is why it goes away by itself.
+
+The hit test uses the same tier the drawing uses, so a symbol decluttered away at 40 nm cannot be
+found by tapping where it would have been at 5 nm — and with the layer off, nothing is tappable at
+all. Overlapping symbols resolve to the **nearest**, not the first, so the answer does not depend
+on file order.
 
 ## What it costs to draw
 

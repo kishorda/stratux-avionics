@@ -64,6 +64,8 @@ View
   --decode             start with the weather report expanded
   --no-underlay        don't draw the NEXRAD precipitation underlay
   --map LAYERS         map layer: off, apt, all             [default: apt]
+  --inspect IDENT      open the airport card for IDENT, e.g. --inspect BJC
+                       (for screenshots; on the panel this is a tap)
   --chart FILE         airport and airspace file
                        [default: conus.chart beside the binary, then the repo copy]
 
@@ -124,6 +126,32 @@ fn attach_chart(ui: &mut Ui, args: &Args) {
     }
 }
 
+/// Resolve `--inspect IDENT` into an open card.
+///
+/// A dev affordance, like `--weather-page` and `--decode`: on the panel this state comes from a
+/// tap, and a tap is not something an offscreen run can make. Searching the whole file rather than
+/// what is on screen, so the flag works regardless of where own-ship happens to be.
+fn open_inspect_card(ui: &Ui, view: &mut ViewState, ident: &str) {
+    let Some(chart) = ui.chart() else {
+        tracing::warn!(ident, "--inspect needs a chart file");
+        return;
+    };
+    for index in 0..chart.airport_count() {
+        let Some(airport) = chart.airport_at(index) else {
+            continue;
+        };
+        if airport.label() == ident {
+            view.inspect = Some(avionics_ui::Inspect {
+                airport: airport.index,
+                opened: Instant::now(),
+            });
+            tracing::info!(ident, name = chart.name(&airport), "inspect card open");
+            return;
+        }
+    }
+    tracing::warn!(ident, "no airport with that identifier in the chart");
+}
+
 #[derive(Debug)]
 struct Args {
     source: Source,
@@ -138,6 +166,7 @@ struct Args {
     check: bool,
     view: ViewState,
     chart: Option<PathBuf>,
+    inspect: Option<String>,
 }
 
 impl Default for Args {
@@ -158,6 +187,7 @@ impl Default for Args {
             check: false,
             view: ViewState::default(),
             chart: None,
+            inspect: None,
         }
     }
 }
@@ -202,6 +232,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--decode" => args.view.weather_decode = true,
             "--no-underlay" => args.view.show_weather_underlay = false,
             "--chart" => args.chart = Some(PathBuf::from(value()?)),
+            "--inspect" => args.inspect = Some(value()?.to_ascii_uppercase()),
             "--map" => {
                 args.view.map_layers = match value()?.to_ascii_lowercase().as_str() {
                     "off" => avionics_ui::MapLayers::Off,
@@ -423,6 +454,9 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
     attach_chart(&mut ui, args);
     let mut view = args.view.clone();
+    if let Some(ident) = &args.inspect {
+        open_inspect_card(&ui, &mut view, ident);
+    }
     let mut timing = RenderTiming::default();
     let mut pacer = FramePacer::default();
 
@@ -465,9 +499,15 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
             for input in inputs {
                 match input {
                     // Left click is a tap: same entry point the touchscreen uses.
-                    DesktopInput::Click { x, y } => {
-                        avionics_ui::interact::handle_tap(&ui, &layout, &mut view, &guard, x, y)
-                    }
+                    DesktopInput::Click { x, y } => avionics_ui::interact::handle_tap(
+                        &ui,
+                        &layout,
+                        &mut view,
+                        &guard,
+                        Instant::now(),
+                        x,
+                        y,
+                    ),
                     DesktopInput::SecondaryClick => {
                         avionics_ui::interact::two_finger_tap(&mut view)
                     }
@@ -476,6 +516,10 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
                 }
             }
         }
+
+        // Retire an inspect card that has been up long enough. It covers the lower-left of the
+        // plan view, and the pilot should not have to remember that a tap dismisses it.
+        view.tick_inspect(Instant::now());
 
         let canvas = presenter.begin_frame(theme.background)?;
         let started = Instant::now();
@@ -864,6 +908,9 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
     attach_chart(&mut ui, args);
     let mut view = args.view.clone();
+    if let Some(ident) = &args.inspect {
+        open_inspect_card(&ui, &mut view, ident);
+    }
     let mut timing = RenderTiming::default();
 
     // Touch is optional: a missing or unrecognised panel controller must not stop the display from
@@ -897,6 +944,8 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
         }
 
         pump_cage(&mut view, &cage_tx, &cage_rx, &cage_target, &runtime);
+        // Retire an inspect card that has been up long enough. See ViewState::tick_inspect.
+        view.tick_inspect(Instant::now());
 
         // Hold here until this page's next frame is due, polling touch throughout. On the
         // attitude page the budget is `None` and this is a single poll, leaving the page flip as
@@ -906,8 +955,9 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
         if !gestures.is_empty() {
             let layout = Layout::for_size(size.0 as f32, size.1 as f32, &ui.theme);
             let guard = state.lock().expect("app state mutex poisoned");
+            let now = Instant::now();
             for gesture in gestures {
-                apply_gesture(&ui, &layout, &mut view, &guard, gesture);
+                apply_gesture(&ui, &layout, &mut view, &guard, now, gesture);
             }
         }
 
@@ -937,12 +987,13 @@ fn apply_gesture(
     layout: &Layout,
     view: &mut ViewState,
     state: &stratux_client::AppState,
+    now: Instant,
     gesture: avionics_input::Gesture,
 ) {
     use avionics_input::Gesture;
     match gesture {
         Gesture::Tap { x, y } => {
-            avionics_ui::interact::handle_tap(ui, layout, view, state, x, y);
+            avionics_ui::interact::handle_tap(ui, layout, view, state, now, x, y);
             tracing::debug!(x, y, page = view.page.label(), range = view.range_nm, "tap");
         }
         Gesture::TwoFingerTap => {
@@ -977,7 +1028,10 @@ fn run_offscreen(args: &Args, state: Shared) -> Result<()> {
     let theme = Theme::dark();
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
     attach_chart(&mut ui, args);
-    let view = args.view.clone();
+    let mut view = args.view.clone();
+    if let Some(ident) = &args.inspect {
+        open_inspect_card(&ui, &mut view, ident);
+    }
     let mut timing = RenderTiming::default();
 
     // Offscreen has no page flip to pace it, so without this the loop would spin as fast as the

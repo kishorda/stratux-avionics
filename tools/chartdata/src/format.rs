@@ -1,21 +1,25 @@
 //! The on-disk format the display reads.
 //!
 //! Fixed-layout little-endian, so loading on the Pi is a read and a few slices rather than a parse.
-//! Every record size is a multiple of 8 and every section starts 8-aligned, which keeps a
+//! Every record size is a multiple of 4 and every section starts 8-aligned, which keeps a
 //! zero-copy reader possible later without changing the file.
 //!
 //! ```text
-//!   header     64 B   magic, version, counts, section offsets, grid, effective date
-//!   buckets     8 B   per 1x1 degree cell: first airport, airport count
-//!   airports   24 B   position, label, elevation, runway, kind, tier, flags
-//!   airspace   40 B   bounding box, ring range, class, flags, lower/upper, label
-//!   rings       8 B   first vertex, vertex count
-//!   vertices    8 B   latitude and longitude, i32 micro-degrees
+//!   header      96 B   magic, version, counts, section offsets, grid, effective date
+//!   buckets      8 B   per 1x1 degree cell: first airport, airport count
+//!   airports    40 B   position, label, elevation, runway, kind, tier, flags,
+//!                      and ranges into the runway, frequency and string tables
+//!   airspace    40 B   bounding box, ring range, class, flags, lower/upper, label
+//!   rings        8 B   first vertex, vertex count
+//!   vertices     8 B   latitude and longitude, i32 micro-degrees
+//!   runways      4 B   magnetic heading, length — one per distinct orientation
+//!   frequencies  8 B   kHz and kind
+//!   strings      -     airport names, UTF-8, addressed by offset and length
 //! ```
 //!
 //! # Why airports are indexed and airspace is not
 //!
-//! There are 20,736 airports and 1,486 airspace polygons. Scanning the airports every frame would
+//! There are 20,736 airports and 1,408 airspace polygons. Scanning the airports every frame would
 //! be several hundred thousand bounding-box tests a second at 30 Hz — the same order as the whole
 //! current frame cost — so they go in a 1-degree grid and the query touches only the cells in view.
 //!
@@ -31,17 +35,26 @@
 use anyhow::{bail, ensure, Result};
 
 pub const MAGIC: [u8; 8] = *b"AVCHART1";
-pub const VERSION: u16 = 1;
 
-pub const HEADER_LEN: usize = 64;
+/// Version 2 added airport names, communication frequencies and runway orientations. The reader
+/// refuses anything else outright rather than guessing at a layout.
+pub const VERSION: u16 = 2;
+
+pub const HEADER_LEN: usize = 96;
 pub const BUCKET_LEN: usize = 8;
-pub const AIRPORT_LEN: usize = 24;
+pub const AIRPORT_LEN: usize = 40;
 pub const AIRSPACE_LEN: usize = 40;
 pub const RING_LEN: usize = 8;
 pub const VERTEX_LEN: usize = 8;
+pub const RUNWAY_LEN: usize = 4;
+pub const FREQUENCY_LEN: usize = 8;
 
 /// Label field width. The longest identifier in the source data is 8 characters.
 pub const LABEL_LEN: usize = 8;
+
+/// Names longer than this are truncated. The inspect card is 290 px of an 800 px panel and the
+/// longest CONUS name runs past 60 characters, most of it a person's full name.
+pub const NAME_MAX: usize = 40;
 
 /// Grid cell size in degrees. One degree of latitude is 60 nm, comfortably more than the 40 nm
 /// largest selectable range, so a query touches at most a handful of cells.
@@ -60,9 +73,9 @@ pub enum Kind {
 
 /// Which range band an airport first appears in. See `docs/airspace-and-airports.md`.
 ///
-/// [`Tier::Heliport`] is its own tier and not merely the last one: 287 heliports fall within 10 nm
-/// of downtown Los Angeles, against a fixed-wing worst case of 35 anywhere in the country. They
-/// are carried in the file and never drawn by default.
+/// [`Tier::Heliport`] is its own tier and not merely the last one: 291 heliports fall within 10 nm
+/// of downtown Los Angeles against 5 fixed-wing fields. They are carried in the file and never
+/// drawn by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Tier {
@@ -81,6 +94,83 @@ pub const FLAG_LIGHTED: u8 = 1 << 1;
 
 /// The lower limit is the surface, so `lower_ft` carries no information.
 pub const FLAG_LOWER_SURFACE: u8 = 1 << 0;
+
+/// What a frequency is for.
+///
+/// Collapsed from OurAirports' free-text `type` column, which has a long tail. The distinctions
+/// kept are the ones that change what a pilot does: who to call, or what to listen to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum FreqKind {
+    /// Common traffic advisory — the one that matters at a non-towered field.
+    Ctaf = 0,
+    Tower = 1,
+    Ground = 2,
+    /// Recorded field information.
+    Atis = 3,
+    /// Automated weather, AWOS or ASOS.
+    Awos = 4,
+    /// UNICOM, which at many fields is also the CTAF.
+    Unicom = 5,
+    Approach = 6,
+    Departure = 7,
+    /// Airport advisory, OurAirports' `A/D`. The second most common type in the file, and at many
+    /// fields the only published number.
+    Advisory = 8,
+    Clearance = 9,
+    /// ARTCC. Rarely what you want on the ground, but real.
+    Center = 10,
+    Other = 11,
+}
+
+impl FreqKind {
+    /// Map OurAirports' `type` column, which is free text with a long tail.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "CTAF" => Self::Ctaf,
+            "TWR" | "TOWER" => Self::Tower,
+            "GND" | "GROUND" => Self::Ground,
+            "ATIS" => Self::Atis,
+            "AWOS" | "ASOS" | "AWIS" | "WX" => Self::Awos,
+            "UNIC" | "UNICOM" => Self::Unicom,
+            "APP" | "APR" | "ARR" => Self::Approach,
+            "DEP" => Self::Departure,
+            "A/D" | "AD" | "AFIS" => Self::Advisory,
+            "CLD" | "CLNC" | "DEL" => Self::Clearance,
+            "CNTR" | "CTR" | "CENTER" => Self::Center,
+            _ => Self::Other,
+        }
+    }
+
+    /// Which of two names for the *same* frequency to keep.
+    ///
+    /// Tower beats CTAF, against the display order. At a towered field the CTAF **is** the tower
+    /// frequency and both rows exist — Rocky Mountain Metro publishes 118.6 twice. Calling it
+    /// `TWR` is never wrong; calling a live tower frequency `CTAF` invites self-announcing on it.
+    pub fn preferred(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Tower, Self::Ctaf) | (Self::Ctaf, Self::Tower) => Self::Tower,
+            _ => self.min(other),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ctaf => "CTAF",
+            Self::Tower => "TWR",
+            Self::Ground => "GND",
+            Self::Atis => "ATIS",
+            Self::Awos => "AWOS",
+            Self::Unicom => "UNI",
+            Self::Approach => "APP",
+            Self::Departure => "DEP",
+            Self::Advisory => "A/D",
+            Self::Clearance => "CLR",
+            Self::Center => "CTR",
+            Self::Other => "",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -109,17 +199,36 @@ impl Class {
     }
 }
 
+/// One runway orientation. Parallel runways collapse into a single entry, because two ticks drawn
+/// on top of each other are one tick that took twice the work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Runway {
+    /// Degrees, from the runway identifier: "5" is 050, "19" is 190. 10-degree granularity, which
+    /// is all the identifier carries and more than enough to point a tick.
+    pub heading_deg: u16,
+    pub length_ft: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frequency {
+    pub khz: u32,
+    pub kind: FreqKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct Airport {
     pub lat_e6: i32,
     pub lon_e6: i32,
     pub label: String,
+    pub name: String,
     pub elevation_ft: i16,
     /// Longest hard-surface runway in feet, 0 when there is none.
     pub runway_ft: u16,
     pub kind: Kind,
     pub tier: Tier,
     pub flags: u8,
+    pub runways: Vec<Runway>,
+    pub frequencies: Vec<Frequency>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,10 +301,6 @@ impl Grid {
     }
 
     /// Which cell a position falls in, clamped to the grid.
-    ///
-    /// Clamping rather than rejecting: a position one micro-degree outside the derived box —
-    /// which the box construction makes impossible, but a future edit might not — belongs in the
-    /// edge cell, not in no cell at all.
     pub fn cell(&self, lat_e6: i32, lon_e6: i32) -> usize {
         let row = div_floor(lat_e6, 1_000_000 * CELL_DEG) - self.lat0 as i32;
         let col = div_floor(lon_e6, 1_000_000 * CELL_DEG) - self.lon0 as i32;
@@ -251,6 +356,33 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         buckets[cell].1 += 1;
     }
 
+    // The three variable-length airport tables, gathered in stored order so each airport's slice
+    // is contiguous.
+    let mut runways: Vec<Runway> = Vec::new();
+    let mut frequencies: Vec<Frequency> = Vec::new();
+    let mut strings: Vec<u8> = Vec::new();
+    let mut spans: Vec<(u32, u32, u32, u8, u8)> = Vec::with_capacity(airports.len());
+    for airport in &airports {
+        let runway_first = runways.len() as u32;
+        runways.extend_from_slice(&airport.runways);
+        let freq_first = frequencies.len() as u32;
+        frequencies.extend_from_slice(&airport.frequencies);
+        let name_off = strings.len() as u32;
+        let name = truncate_on_char_boundary(&airport.name, NAME_MAX);
+        strings.extend_from_slice(name.as_bytes());
+        spans.push((
+            runway_first,
+            freq_first,
+            name_off,
+            name.len() as u8,
+            airport.frequencies.len().min(u8::MAX as usize) as u8,
+        ));
+    }
+    // Pad so the file length stays a multiple of 8, as every other section is.
+    while strings.len() % 8 != 0 {
+        strings.push(0);
+    }
+
     let mut rings: Vec<(u32, u32)> = Vec::new();
     let mut vertices: Vec<(i32, i32)> = Vec::new();
     let mut ring_ranges: Vec<(u32, u16)> = Vec::with_capacity(chart.airspace.len());
@@ -268,24 +400,45 @@ pub fn write(chart: &Chart) -> Vec<u8> {
     let airspace_off = airport_off + airports.len() * AIRPORT_LEN;
     let ring_off = airspace_off + chart.airspace.len() * AIRSPACE_LEN;
     let vertex_off = ring_off + rings.len() * RING_LEN;
-    let total = vertex_off + vertices.len() * VERTEX_LEN;
+    let runway_off = vertex_off + vertices.len() * VERTEX_LEN;
+    let freq_off = runway_off + runways.len() * RUNWAY_LEN;
+    let string_off = freq_off + frequencies.len() * FREQUENCY_LEN;
+    let total = string_off + strings.len();
 
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes()); // flags, reserved
     out.extend_from_slice(&chart.effective_days.to_le_bytes());
-    out.extend_from_slice(&(airports.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(chart.airspace.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(rings.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
+    for count in [
+        airports.len(),
+        chart.airspace.len(),
+        rings.len(),
+        vertices.len(),
+        runways.len(),
+        frequencies.len(),
+        strings.len(),
+    ] {
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+    }
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     out.extend_from_slice(&grid.lat0.to_le_bytes());
     out.extend_from_slice(&grid.lon0.to_le_bytes());
     out.extend_from_slice(&grid.rows.to_le_bytes());
     out.extend_from_slice(&grid.cols.to_le_bytes());
-    for offset in [bucket_off, airport_off, airspace_off, ring_off, vertex_off] {
+    for offset in [
+        bucket_off,
+        airport_off,
+        airspace_off,
+        ring_off,
+        vertex_off,
+        runway_off,
+        freq_off,
+        string_off,
+    ] {
         out.extend_from_slice(&(offset as u32).to_le_bytes());
     }
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     debug_assert_eq!(out.len(), HEADER_LEN);
 
@@ -294,7 +447,9 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         out.extend_from_slice(&count.to_le_bytes());
     }
 
-    for airport in &airports {
+    for (airport, (runway_first, freq_first, name_off, name_len, freq_count)) in
+        airports.iter().zip(&spans)
+    {
         out.extend_from_slice(&airport.lat_e6.to_le_bytes());
         out.extend_from_slice(&airport.lon_e6.to_le_bytes());
         out.extend_from_slice(&label_bytes(&airport.label));
@@ -303,7 +458,13 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         out.push(airport.kind as u8);
         out.push(airport.tier as u8);
         out.push(airport.flags);
-        out.push(0);
+        out.push(airport.runways.len().min(u8::MAX as usize) as u8);
+        out.extend_from_slice(&runway_first.to_le_bytes());
+        out.extend_from_slice(&freq_first.to_le_bytes());
+        out.extend_from_slice(&name_off.to_le_bytes());
+        out.push(*name_len);
+        out.push(*freq_count);
+        out.extend_from_slice(&0u16.to_le_bytes());
     }
 
     for (space, (ring_first, ring_count)) in chart.airspace.iter().zip(&ring_ranges) {
@@ -330,8 +491,37 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         out.extend_from_slice(&lon.to_le_bytes());
     }
 
+    for runway in &runways {
+        out.extend_from_slice(&runway.heading_deg.to_le_bytes());
+        out.extend_from_slice(&runway.length_ft.to_le_bytes());
+    }
+
+    for frequency in &frequencies {
+        out.extend_from_slice(&frequency.khz.to_le_bytes());
+        out.push(frequency.kind as u8);
+        out.extend_from_slice(&[0u8; 3]);
+    }
+
+    out.extend_from_slice(&strings);
+
     debug_assert_eq!(out.len(), total);
     out
+}
+
+/// Cut a name to at most `max` **bytes** without splitting a character.
+///
+/// Names come from a community database and contain accented characters, so slicing at a byte
+/// index would panic on some of them — a build that works until the day someone adds an airport
+/// with a diacritic in the fortieth column.
+pub fn truncate_on_char_boundary(name: &str, max: usize) -> &str {
+    if name.len() <= max {
+        return name;
+    }
+    let mut end = max;
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
 }
 
 /// Truncated at [`LABEL_LEN`] and NUL-padded. Truncation is silent by design — the builder has
@@ -353,6 +543,9 @@ pub struct Summary {
     pub airspace: u32,
     pub rings: u32,
     pub vertices: u32,
+    pub runways: u32,
+    pub frequencies: u32,
+    pub strings: u32,
     pub grid: Grid,
     pub bytes: usize,
 }
@@ -380,41 +573,40 @@ pub fn read_summary(bytes: &[u8]) -> Result<Summary> {
     let airspace = u32at(20);
     let rings = u32at(24);
     let vertices = u32at(28);
+    let runways = u32at(32);
+    let frequencies = u32at(36);
+    let strings = u32at(40);
     let grid = Grid {
-        lat0: i16at(32),
-        lon0: i16at(34),
-        rows: u16at(36),
-        cols: u16at(38),
+        lat0: i16at(48),
+        lon0: i16at(50),
+        rows: u16at(52),
+        cols: u16at(54),
     };
 
-    let bucket_off = u32at(40) as usize;
-    let airport_off = u32at(44) as usize;
-    let airspace_off = u32at(48) as usize;
-    let ring_off = u32at(52) as usize;
-    let vertex_off = u32at(56) as usize;
-
-    ensure!(bucket_off == HEADER_LEN, "buckets do not follow the header");
+    let expected = [
+        ("buckets", HEADER_LEN, grid.cells() * BUCKET_LEN),
+        ("airports", 0, airports as usize * AIRPORT_LEN),
+        ("airspace", 0, airspace as usize * AIRSPACE_LEN),
+        ("rings", 0, rings as usize * RING_LEN),
+        ("vertices", 0, vertices as usize * VERTEX_LEN),
+        ("runways", 0, runways as usize * RUNWAY_LEN),
+        ("frequencies", 0, frequencies as usize * FREQUENCY_LEN),
+        ("strings", 0, strings as usize),
+    ];
+    let mut cursor = HEADER_LEN;
+    for (index, (name, fixed, len)) in expected.iter().enumerate() {
+        let stated = u32at(56 + index * 4) as usize;
+        let want = if index == 0 { *fixed } else { cursor };
+        ensure!(
+            stated == want,
+            "{name} section is at {stated}, expected {want}"
+        );
+        cursor = want + len;
+    }
     ensure!(
-        airport_off == bucket_off + grid.cells() * BUCKET_LEN,
-        "airport section does not follow the grid"
-    );
-    ensure!(
-        airspace_off == airport_off + airports as usize * AIRPORT_LEN,
-        "airspace section does not follow the airports"
-    );
-    ensure!(
-        ring_off == airspace_off + airspace as usize * AIRSPACE_LEN,
-        "ring section does not follow the airspace"
-    );
-    ensure!(
-        vertex_off == ring_off + rings as usize * RING_LEN,
-        "vertex section does not follow the rings"
-    );
-    ensure!(
-        bytes.len() == vertex_off + vertices as usize * VERTEX_LEN,
-        "file is {} bytes, sections account for {}",
-        bytes.len(),
-        vertex_off + vertices as usize * VERTEX_LEN
+        bytes.len() == cursor,
+        "file is {} bytes, sections account for {cursor}",
+        bytes.len()
     );
 
     Ok(Summary {
@@ -424,6 +616,9 @@ pub fn read_summary(bytes: &[u8]) -> Result<Summary> {
         airspace,
         rings,
         vertices,
+        runways,
+        frequencies,
+        strings,
         grid,
         bytes: bytes.len(),
     })
@@ -432,16 +627,55 @@ pub fn read_summary(bytes: &[u8]) -> Result<Summary> {
 /// Every airport in the file, in stored order. For verification, not for the display.
 pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
     let summary = read_summary(bytes)?;
-    let base = HEADER_LEN + summary.grid.cells() * BUCKET_LEN;
+    let u32at = |o: usize| {
+        u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+    };
+    let base = u32at(60) as usize;
+    let runway_base = u32at(76) as usize;
+    let freq_base = u32at(80) as usize;
+    let string_base = u32at(84) as usize;
+
     let mut out = Vec::with_capacity(summary.airports as usize);
     for i in 0..summary.airports as usize {
-        let r = &bytes[base + i * AIRPORT_LEN..base + (i + 1) * AIRPORT_LEN];
+        let o = base + i * AIRPORT_LEN;
+        let r = &bytes[o..o + AIRPORT_LEN];
+
+        let runway_first = u32::from_le_bytes(r[24..28].try_into()?) as usize;
+        let runway_count = r[23] as usize;
+        let mut runways = Vec::with_capacity(runway_count);
+        for k in 0..runway_count {
+            let ro = runway_base + (runway_first + k) * RUNWAY_LEN;
+            runways.push(Runway {
+                heading_deg: u16::from_le_bytes(bytes[ro..ro + 2].try_into()?),
+                length_ft: u16::from_le_bytes(bytes[ro + 2..ro + 4].try_into()?),
+            });
+        }
+
+        let freq_first = u32::from_le_bytes(r[28..32].try_into()?) as usize;
+        let freq_count = r[37] as usize;
+        let mut frequencies = Vec::with_capacity(freq_count);
+        for k in 0..freq_count {
+            let fo = freq_base + (freq_first + k) * FREQUENCY_LEN;
+            frequencies.push(Frequency {
+                khz: u32::from_le_bytes(bytes[fo..fo + 4].try_into()?),
+                kind: freq_kind(bytes[fo + 4]),
+            });
+        }
+
+        let name_off = u32::from_le_bytes(r[32..36].try_into()?) as usize;
+        let name_len = r[36] as usize;
+        let name = String::from_utf8_lossy(
+            &bytes[string_base + name_off..string_base + name_off + name_len],
+        )
+        .to_string();
+
         out.push(Airport {
             lat_e6: i32::from_le_bytes(r[0..4].try_into()?),
             lon_e6: i32::from_le_bytes(r[4..8].try_into()?),
             label: String::from_utf8_lossy(&r[8..16])
                 .trim_end_matches('\0')
                 .to_string(),
+            name,
             elevation_ft: i16::from_le_bytes(r[16..18].try_into()?),
             runway_ft: u16::from_le_bytes(r[18..20].try_into()?),
             kind: match r[20] {
@@ -458,18 +692,38 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
                 _ => Tier::Heliport,
             },
             flags: r[22],
+            runways,
+            frequencies,
         });
     }
     Ok(out)
 }
 
+fn freq_kind(byte: u8) -> FreqKind {
+    match byte {
+        0 => FreqKind::Ctaf,
+        1 => FreqKind::Tower,
+        2 => FreqKind::Ground,
+        3 => FreqKind::Atis,
+        4 => FreqKind::Awos,
+        5 => FreqKind::Unicom,
+        6 => FreqKind::Approach,
+        7 => FreqKind::Departure,
+        8 => FreqKind::Advisory,
+        9 => FreqKind::Clearance,
+        10 => FreqKind::Center,
+        _ => FreqKind::Other,
+    }
+}
+
 /// Class and vertex count of every airspace record, in stored order. For verification.
 pub fn read_airspace(bytes: &[u8]) -> Result<Vec<(Class, u32)>> {
     let summary = read_summary(bytes)?;
-    let base = HEADER_LEN
-        + summary.grid.cells() * BUCKET_LEN
-        + summary.airports as usize * AIRPORT_LEN;
-    let ring_base = base + summary.airspace as usize * AIRSPACE_LEN;
+    let u32at = |o: usize| {
+        u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+    };
+    let base = u32at(64) as usize;
+    let ring_base = u32at(68) as usize;
 
     let mut out = Vec::with_capacity(summary.airspace as usize);
     for i in 0..summary.airspace as usize {
@@ -515,11 +769,20 @@ mod tests {
             lat_e6: (lat * 1e6) as i32,
             lon_e6: (lon * 1e6) as i32,
             label: label.into(),
+            name: format!("{label} Municipal Airport"),
             elevation_ft: 187,
             runway_ft: 5999,
             kind: Kind::Medium,
             tier,
             flags: FLAG_HARD_SURFACE | FLAG_LIGHTED,
+            runways: vec![
+                Runway { heading_deg: 50, length_ft: 5999 },
+                Runway { heading_deg: 130, length_ft: 3999 },
+            ],
+            frequencies: vec![
+                Frequency { khz: 118_100, kind: FreqKind::Ctaf },
+                Frequency { khz: 124_250, kind: FreqKind::Atis },
+            ],
         }
     }
 
@@ -530,7 +793,12 @@ mod tests {
                 airport("MMU", 40.799, -74.415, Tier::Major),
                 airport("EWR", 40.692, -74.169, Tier::Major),
                 airport("LAX", 33.942, -118.408, Tier::Major),
-                airport("06N", 41.431, -74.392, Tier::Paved),
+                Airport {
+                    runways: Vec::new(),
+                    frequencies: Vec::new(),
+                    name: String::new(),
+                    ..airport("06N", 41.431, -74.392, Tier::Paved)
+                },
             ],
             airspace: vec![Airspace {
                 class: Class::B,
@@ -564,6 +832,8 @@ mod tests {
         assert_eq!(s.airspace, 1);
         assert_eq!(s.rings, 2);
         assert_eq!(s.vertices, 7);
+        assert_eq!(s.runways, 6, "three airports with two runways each");
+        assert_eq!(s.frequencies, 6);
         assert_eq!(s.effective_days, 20_643);
         assert_eq!(s.bytes, bytes.len());
     }
@@ -586,13 +856,32 @@ mod tests {
             assert_eq!(found.runway_ft, original.runway_ft);
             assert_eq!(found.tier, original.tier);
             assert_eq!(found.flags, original.flags);
+            assert_eq!(found.name, original.name);
+            assert_eq!(found.runways, original.runways);
+            assert_eq!(found.frequencies, original.frequencies);
         }
     }
 
     #[test]
+    fn an_airport_with_nothing_attached_reads_back_empty_not_borrowed() {
+        // The variable-length tables are the new way this format can go wrong: an off-by-one in a
+        // span makes one airport read its neighbour's runways and frequencies, which looks like
+        // plausible data rather than like a fault.
+        let bytes = write(&chart());
+        let back = read_airports(&bytes).unwrap();
+        let bare = back.iter().find(|a| a.label == "06N").unwrap();
+        assert!(bare.runways.is_empty(), "06N borrowed runways");
+        assert!(bare.frequencies.is_empty(), "06N borrowed frequencies");
+        assert_eq!(bare.name, "");
+
+        let mmu = back.iter().find(|a| a.label == "MMU").unwrap();
+        assert_eq!(mmu.frequencies.len(), 2);
+        assert_eq!(mmu.frequencies[0].khz, 118_100);
+        assert_eq!(mmu.name, "MMU Municipal Airport");
+    }
+
+    #[test]
     fn the_grid_puts_every_airport_in_the_cell_that_claims_it() {
-        // The index is the one part of this file that can be wrong without looking wrong: a broken
-        // bucket means airports quietly missing from the view rather than a load failure.
         let bytes = write(&chart());
         let summary = read_summary(&bytes).unwrap();
         let buckets = read_buckets(&bytes).unwrap();
@@ -616,9 +905,6 @@ mod tests {
 
     #[test]
     fn western_longitudes_do_not_round_toward_zero() {
-        // The bug this guards is the reason `div_floor` exists. With plain `/`, 74.5W and 74.0W
-        // land in the same cell and the cell west of them holds half of what it should — an index
-        // that is subtly wrong across the whole of the United States and correct in Europe.
         let grid = Grid { lat0: 24, lon0: -125, rows: 26, cols: 60 };
         let west = grid.cell(40_000_000, -74_500_000);
         let east = grid.cell(40_000_000, -74_000_000);
@@ -634,7 +920,6 @@ mod tests {
             let cell = grid.cell(a.lat_e6, a.lon_e6);
             assert!(cell < grid.cells(), "{} fell outside the grid", a.label);
         }
-        // LAX at 118.4W and MMU at 74.4W must not share a cell.
         assert_ne!(
             grid.cell(33_942_000, -118_408_000),
             grid.cell(40_799_000, -74_415_000)
@@ -643,8 +928,6 @@ mod tests {
 
     #[test]
     fn the_build_is_reproducible() {
-        // The same input has to give a byte-identical file. Otherwise every rebuild shows as a
-        // data change in the diff and the commit stops carrying information.
         assert_eq!(write(&chart()), write(&chart()));
     }
 
@@ -658,9 +941,72 @@ mod tests {
         wrong[0] = b'X';
         assert!(read_summary(&wrong).is_err(), "bad magic");
 
-        let mut future = bytes;
-        future[8] = 99;
-        assert!(read_summary(&future).is_err(), "unknown version");
+        let mut old = bytes.clone();
+        old[8] = 1;
+        assert!(read_summary(&old).is_err(), "version 1 must be refused, not reinterpreted");
+
+        let mut count = bytes;
+        count[16] = count[16].wrapping_add(1);
+        assert!(read_summary(&count).is_err(), "airport count vs offsets");
+    }
+
+    #[test]
+    fn a_name_is_cut_between_characters_and_not_through_one() {
+        // Names come from a community database. Slicing at a byte index would panic the build the
+        // first time someone adds a field with a diacritic in the fortieth column.
+        let ascii = "Morristown Municipal Airport";
+        assert_eq!(truncate_on_char_boundary(ascii, NAME_MAX), ascii);
+
+        let accented = "Aérodrome de Saint-Étienne-de-Saint-Geoirs Regional";
+        let cut = truncate_on_char_boundary(accented, NAME_MAX);
+        assert!(cut.len() <= NAME_MAX);
+        assert!(accented.starts_with(cut));
+
+        // Every prefix length must be safe, not just the one this name happens to hit.
+        for max in 0..accented.len() {
+            let cut = truncate_on_char_boundary(accented, max);
+            assert!(cut.len() <= max);
+            assert!(accented.starts_with(cut));
+        }
+    }
+
+    #[test]
+    fn frequency_kinds_map_the_spellings_the_source_actually_uses() {
+        // Taken from the type column of the real file, which is free text with a long tail.
+        for (raw, want) in [
+            ("CTAF", FreqKind::Ctaf),
+            ("TWR", FreqKind::Tower),
+            ("GND", FreqKind::Ground),
+            ("ATIS", FreqKind::Atis),
+            ("AWOS", FreqKind::Awos),
+            ("ASOS", FreqKind::Awos),
+            ("UNIC", FreqKind::Unicom),
+            ("APP", FreqKind::Approach),
+            ("CLD", FreqKind::Clearance),
+            // The two biggest former members of Other: 1,544 and 992 CONUS rows. Both reach the
+            // card, so both need a name — an unlabelled number is dropped from the card entirely.
+            ("A/D", FreqKind::Advisory),
+            ("CNTR", FreqKind::Center),
+            ("RDO", FreqKind::Other),
+            ("", FreqKind::Other),
+        ] {
+            assert_eq!(FreqKind::parse(raw), want, "{raw:?}");
+        }
+        // Case and padding are not meaningful in the source.
+        assert_eq!(FreqKind::parse(" twr "), FreqKind::Tower);
+    }
+
+    #[test]
+    fn tower_wins_a_shared_frequency_against_the_display_order() {
+        // CTAF sorts first for display, because at a non-towered field it is what you want. But
+        // when one radio is published under both names the specific one has to win: labelling a
+        // live tower frequency "CTAF" invites self-announcing on it.
+        assert_eq!(FreqKind::Ctaf.preferred(FreqKind::Tower), FreqKind::Tower);
+        assert_eq!(FreqKind::Tower.preferred(FreqKind::Ctaf), FreqKind::Tower);
+        // Everything else keeps the more useful of the two, whichever way round it arrives.
+        assert_eq!(FreqKind::Unicom.preferred(FreqKind::Ctaf), FreqKind::Ctaf);
+        assert_eq!(FreqKind::Ctaf.preferred(FreqKind::Unicom), FreqKind::Ctaf);
+        assert_eq!(FreqKind::Other.preferred(FreqKind::Atis), FreqKind::Atis);
     }
 
     #[test]

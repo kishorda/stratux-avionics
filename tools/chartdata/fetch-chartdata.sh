@@ -70,6 +70,10 @@ get() {
 echo "==> OurAirports"
 get "$OURAIRPORTS/airports.csv" "$OUT/airports.csv" "airports.csv"
 get "$OURAIRPORTS/runways.csv"  "$OUT/runways.csv"  "runways.csv"
+# Communication frequencies. Only about 18% of CONUS airports have any — but that 18% is
+# essentially every field you would actually talk to, and it is what makes the inspect card
+# worth tapping.
+get "$OURAIRPORTS/airport-frequencies.csv" "$OUT/airport-frequencies.csv" "airport-frequencies.csv"
 
 echo
 echo "==> FAA Class Airspace layer metadata"

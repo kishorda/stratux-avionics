@@ -204,6 +204,37 @@ impl MapLayers {
     }
 }
 
+/// An airport the pilot tapped, and when.
+///
+/// # Why the plan-view body is no longer entirely inert
+///
+/// It was, deliberately: "a hand steadying itself against the panel should not change what is on
+/// it." That rule was about the *selections* — a brush against the glass silently changing the
+/// range scale or the heading reference is a real way to be misled.
+///
+/// Inspecting keeps the rule while relaxing the letter of it. A tap only opens a card when it
+/// lands on an airport symbol, so an accidental touch almost always still does nothing; the card
+/// changes no selection, hides no traffic, and cannot move the pilot off the page; any next tap
+/// dismisses it; and it lapses on its own after [`INSPECT_TIMEOUT`] so it cannot be left covering
+/// the picture. What it costs is the corner of the screen it occupies, which is why it is placed
+/// away from own-ship and why it goes away by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inspect {
+    /// Index into the chart's airport table.
+    pub airport: u32,
+    pub opened: Instant,
+}
+
+/// How long an inspect card stays up before retiring itself.
+pub const INSPECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How close to an airport symbol a tap has to land, in pixels.
+///
+/// Generous compared with the 5 px symbol, because the target is a fingertip on a panel in
+/// turbulence — but not so generous that a tap on empty sky finds something a quarter of the
+/// screen away.
+pub const INSPECT_HIT_PX: f32 = 18.0;
+
 /// How long an armed cage waits for its confirming press before lapsing.
 pub const CAGE_ARM_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -228,6 +259,8 @@ pub struct ViewState {
     pub show_weather_underlay: bool,
     /// How much of the airport and airspace layer to draw. See [`MapLayers`].
     pub map_layers: MapLayers,
+    /// The airport whose card is showing, if any. See [`Inspect`].
+    pub inspect: Option<Inspect>,
     /// Progress of an AHRS cage request. See [`CageState`].
     pub cage: CageState,
     /// When `cage` last changed, for the arm timeout and result dwell.
@@ -252,6 +285,7 @@ impl Default for ViewState {
             // Airports on, airspace off. Airports are the half that carries no navigation claim,
             // so they cost nothing to have up; airspace is opt-in and says so on the panel.
             map_layers: MapLayers::Airports,
+            inspect: None,
             cage: CageState::Idle,
             cage_changed: None,
         }
@@ -294,8 +328,26 @@ impl ViewState {
     }
 
     /// Step the map layer through off, airports, airports and airspace.
+    ///
+    /// Turning the layer off closes any open card with it: leaving a card up for a symbol that is
+    /// no longer drawn would be a readout with nothing to point at.
     pub fn cycle_map_layers(&mut self) {
         self.map_layers = self.map_layers.cycle();
+        if !self.map_layers.shows_airports() {
+            self.inspect = None;
+        }
+    }
+
+    /// Retire an inspect card that has been up long enough. Call once per frame.
+    ///
+    /// Without this a card opened on the ground would still be covering the lower-left of the plan
+    /// view an hour later, and the pilot would have to remember that a tap dismisses it.
+    pub fn tick_inspect(&mut self, now: Instant) {
+        if let Some(inspect) = self.inspect {
+            if now.saturating_duration_since(inspect.opened) > INSPECT_TIMEOUT {
+                self.inspect = None;
+            }
+        }
     }
 
     pub fn set_cage(&mut self, state: CageState, now: Instant) {
@@ -481,6 +533,11 @@ impl Ui {
         };
 
         let mut stats = planview::draw(self, canvas, state, view, now, layout, projection);
+
+        // The card last of all, and above the traffic tags. It is on screen because the pilot
+        // asked for it; a tag they did not ask for must not be allowed to cover it.
+        maplayer::draw_inspect(self, canvas, view, layout, projection.as_ref());
+
         stats.airports_drawn = map.airports;
         stats.airspace_drawn = map.airspace;
         stats

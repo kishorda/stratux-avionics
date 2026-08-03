@@ -103,7 +103,9 @@ fn build(source: &Path, out: &Path) -> Result<()> {
 
     let airports_csv = read(&source.join("airports.csv"))?;
     let runways_csv = read(&source.join("runways.csv"))?;
-    let (airport_records, airport_stats) = airports::parse(&airports_csv, &runways_csv)?;
+    let frequencies_csv = read(&source.join("airport-frequencies.csv"))?;
+    let (airport_records, airport_stats) =
+        airports::parse(&airports_csv, &runways_csv, &frequencies_csv)?;
 
     println!(
         "    airports.csv        {} rows -> {} kept",
@@ -116,6 +118,15 @@ fn build(source: &Path, out: &Path) -> Result<()> {
         airport_stats.dropped_closed,
         airport_stats.dropped_unlabelled,
         airport_stats.dropped_bad_position
+    );
+    println!(
+        "        {} frequencies at {} airports ({:.0}%), {} runway orientations at {} ({:.0}%)",
+        airport_stats.frequencies,
+        airport_stats.with_frequencies,
+        100.0 * airport_stats.with_frequencies as f64 / airport_stats.kept.max(1) as f64,
+        airport_stats.runway_headings,
+        airport_stats.with_runway_headings,
+        100.0 * airport_stats.with_runway_headings as f64 / airport_stats.kept.max(1) as f64,
     );
 
     let mut pages = Vec::new();
@@ -233,6 +244,12 @@ fn report(summary: &format::Summary) {
         summary.version, summary.airports, summary.airspace, summary.rings, summary.vertices
     );
     println!(
+        "    {} runway orientations, {} frequencies, {} KiB of names",
+        summary.runways,
+        summary.frequencies,
+        summary.strings / 1024
+    );
+    println!(
         "    grid {}x{} cells from {}, {}",
         summary.grid.rows, summary.grid.cols, summary.grid.lat0, summary.grid.lon0
     );
@@ -258,6 +275,20 @@ fn inspect(path: &Path) -> Result<()> {
         "    tiers: {} major, {} paved, {} minor, {} heliport",
         by_tier[0], by_tier[1], by_tier[2], by_tier[3]
     );
+
+    let mut kinds: Vec<(format::FreqKind, usize)> = Vec::new();
+    for f in airports.iter().flat_map(|a| &a.frequencies) {
+        match kinds.iter_mut().find(|(k, _)| *k == f.kind) {
+            Some(entry) => entry.1 += 1,
+            None => kinds.push((f.kind, 1)),
+        }
+    }
+    kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let summary: Vec<String> = kinds
+        .iter()
+        .map(|(k, n)| format!("{} {n}", if k.label().is_empty() { "OTHER" } else { k.label() }))
+        .collect();
+    println!("    frequencies: {}", summary.join(", "));
 
     let airspace = format::read_airspace(&bytes)?;
     for class in [format::Class::B, format::Class::C, format::Class::D] {

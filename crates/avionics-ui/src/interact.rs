@@ -161,16 +161,53 @@ fn scroll_weather(view: &mut ViewState, zone: TapZone, rows: usize, total: usize
 }
 
 /// Convenience for the binary: resolve the row count and dispatch.
+///
+/// Also the one place that knows about the chart, because inspecting needs a projection and the
+/// projection needs own-ship. The order below is the whole rule:
+///
+/// 1. Either strip wins, always. A key press must never also be something else.
+/// 2. On the plan view with the map on, a tap **on an airport symbol** opens its card.
+/// 3. A tap anywhere else on the body dismisses an open card.
+/// 4. Otherwise, the ordinary zone behaviour — which on the plan view is still nothing.
+///
+/// Step 2 is the only thing the plan-view body responds to, and it changes no selection. See
+/// [`crate::Inspect`] for why that distinction is the one that matters.
 pub fn handle_tap(
     ui: &Ui,
     layout: &Layout,
     view: &mut ViewState,
     state: &stratux_client::AppState,
+    now: std::time::Instant,
     x: f32,
     y: f32,
 ) {
     let rows = crate::weatherpage::rows_per_page(ui, layout);
     let total = state.weather.len();
+
+    let on_strip = pagestrip::hit(layout, x, y).is_some() || softkeys::hit(layout, x, y).is_some();
+    if !on_strip && view.page == Page::PlanView {
+        if let (Some(chart), Some(projection)) = (
+            ui.chart(),
+            crate::planview::make_projection(ui, state, view, now, layout),
+        ) {
+            if let Some(airport) =
+                crate::maplayer::hit_airport(chart, view, layout, &projection, x, y)
+            {
+                view.inspect = Some(crate::Inspect {
+                    airport: airport.index,
+                    opened: now,
+                });
+                return;
+            }
+        }
+        // Missed everything, so a card that is up goes away. This is the dismiss gesture, and it
+        // is the same one that would otherwise have done nothing at all.
+        if view.inspect.is_some() {
+            view.inspect = None;
+            return;
+        }
+    }
+
     tap(view, layout, x, y, rows, total);
 }
 

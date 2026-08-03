@@ -122,6 +122,13 @@ certified IMU here; the attitude comes from a hobby sensor and GPS-derived track
 do on a sectional, and appear at 10 nm and below — closer in than that they would be competing with
 traffic tags for the same space, and traffic wins.
 
+The ticks through the symbols are **runway alignment** — `BDU`'s east-west strip, `EIK`'s
+north-south, `7CO0`'s crossed pair. They come from the runway identifier rather than the survey
+heading, because the heading column is populated for under a third of runways and the identifier
+for all of them, at 10 degrees, which is finer than a tick a few pixels long can show anyway.
+Parallel and reciprocal runways collapse, so KORD draws its four distinct angles and not eleven
+overlapping lines.
+
 ![The same area with Class B and Class D boundaries drawn](docs/images/map-airspace.png)
 
 `MAP ALL` adds Class B, C and D. Denver's Class B shelves are the indigo polygons; the dashed circle
@@ -134,10 +141,26 @@ Airports alone raise nothing: a misplaced airport symbol costs clutter, whereas 
 something a pilot might fly relative to, and traffic can be checked out of the window in a way a
 Class B shelf cannot. That asymmetry is why the two layers are separable at all.
 
+### Tapping an airport
+
+![The airport card, showing name, elevation, runway and frequencies](docs/images/map-inspect.png)
+
+Tap a symbol for its card: name, elevation, longest runway with its designator, the published
+frequencies, and where it is from here. `TWR 118.6 GND 121.7 ATIS 126.25 A/D 126.1` at Rocky
+Mountain Metro. About 18% of fields have any published frequency — that 18% being essentially every
+field you would actually talk to — and the rest say `no published frequency` rather than showing a
+blank line.
+
+**This is the only thing the plan-view body responds to**, and it was inert on purpose: a hand
+steadying itself against the panel in turbulence must not change the range or the heading reference.
+A card changes no selection, hides no traffic, needs a tap within 18 px of a symbol to open, is
+dismissed by any next tap, and lapses by itself after 20 seconds. The reasoning is in
+[the design note](docs/airspace-and-airports.md#tapping-an-airport-and-the-rule-it-bends).
+
 The data is built by [`tools/chartdata`](tools/chartdata) from OurAirports and the FAA's Class
 Airspace layer, both public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
 for the measurements behind every threshold, including why a Class D arrives as 3,256 vertices and
-leaves as 84.
+leaves as 84, and why the frequency file stores kilohertz.
 
 ### Controls
 
@@ -217,6 +240,8 @@ cargo build --release -p avionics -p replay
     --out /tmp/shots/map-apt --frames 40 --range 10 --map apt
 ./target/release/avionics --replay /tmp/synth.jsonl --offscreen \
     --out /tmp/shots/map-all --frames 40 --range 20 --map all
+./target/release/avionics --replay /tmp/synth.jsonl --offscreen \
+    --out /tmp/shots/map-card --frames 40 --range 5 --map all --inspect BJC
 
 # and the live one, from the recorded outdoor session:
 ./target/release/avionics --replay captures/2026-08-02-outdoor-gps-3d-fix/session.jsonl \
@@ -309,9 +334,9 @@ device.
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
-| M7 | Airports + airspace map layer | **renders offscreen** — 20,736 airports and 1,408 Class B/C/D polygons, drawn and measured on the desktop; **not yet seen on the panel** |
+| M7 | Airports + airspace map layer | **renders offscreen** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks and tap-to-inspect, drawn and measured on the desktop; **not yet seen on the panel** |
 
-327 tests passing, clippy clean.
+354 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
