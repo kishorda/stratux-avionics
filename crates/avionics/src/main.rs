@@ -88,6 +88,14 @@ enum Source {
 /// `--chart` that fails is still only a warning, but it says so loudly, because the pilot asked
 /// for that file by name and would otherwise be looking at a blank map wondering why.
 fn attach_chart(ui: &mut Ui, args: &Args) {
+    ui.set_chart(find_chart(args));
+}
+
+/// Locate and load the chart, or `None`.
+///
+/// Split out from [`attach_chart`] so `--check` can report on it without a [`Ui`], which needs a
+/// canvas and therefore a display this command deliberately does not take over.
+fn find_chart(args: &Args) -> Option<avionics_ui::Chart> {
     let explicit = args.chart.is_some();
     let candidates: Vec<PathBuf> = match &args.chart {
         Some(path) => vec![path.clone()],
@@ -114,8 +122,7 @@ fn attach_chart(ui: &mut Ui, args: &Args) {
                     airspace = chart.airspace_count(),
                     "map layer loaded"
                 );
-                ui.set_chart(Some(chart));
-                return;
+                return Some(chart);
             }
             Err(e) if explicit => tracing::warn!(path = %path.display(), error = %e, "--chart could not be loaded; no map layer"),
             Err(_) => {}
@@ -124,6 +131,7 @@ fn attach_chart(ui: &mut Ui, args: &Args) {
     if !explicit {
         tracing::info!("no chart file found; the map layer is off");
     }
+    None
 }
 
 /// Resolve `--inspect IDENT` into an open card.
@@ -751,6 +759,21 @@ fn run_check(args: &Args) -> Result<()> {
                 println!("  stratux     : WARN {address} unreachable ({e})");
             }
         }
+    }
+
+    // The map layer, reported but never required.
+    //
+    // A missing chart is silent at runtime by design — traffic is why the panel exists and a bad
+    // data file must not stop it drawing. That silence is exactly why it belongs here: without a
+    // line in `--check`, an install with no chart looks identical to a correct one until someone
+    // notices the airports are gone.
+    match find_chart(args) {
+        Some(chart) => println!(
+            "  map layer   : OK   {} airports, {} airspace volumes",
+            chart.airport_count(),
+            chart.airspace_count()
+        ),
+        None => println!("  map layer   : WARN no conus.chart found; airports and airspace will not draw"),
     }
 
     println!();

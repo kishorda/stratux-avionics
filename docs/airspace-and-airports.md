@@ -389,10 +389,29 @@ session — which starts under the Denver Class B, so the airspace query is doin
 | `--map apt`, 40 nm | 0.76 ms | 7.58 ms |
 | `--map all`, 40 nm | 1.47 ms | 10.81 ms |
 
-So airports cost about 0.15 ms and airspace about 0.6 ms per frame here. **These are desktop
-numbers and do not transfer to the Pi** — the README's frame-cost table was measured on the target
-and this has not been. What they do establish is the shape: the layer is a fraction of a frame, and
-the airspace half is four times the airport half, which is the dash re-tessellation.
+So airports cost about 0.15 ms and airspace about 0.6 ms per frame here.
+
+### And on the Pi
+
+Measured on the target on 2026-08-03, replaying the 30-minute outdoor capture — real own-ship,
+real traffic, New York Class B overhead — at 20 nm, 900 frames each. The renderer reports
+`VC4 V3D 2.1, OpenGL ES 2.0, gles2=true`, which is the thing the desktop harness cannot check:
+
+| | mean draw | worst steady |
+| --- | --- | --- |
+| `--map off` | 2.05 ms | 12.70 ms |
+| `--map apt` | 2.40 ms | 13.44 ms |
+| `--map all` | 5.39 ms | 16.33 ms |
+
+**Airports 0.35 ms, airspace 3.0 ms**, against a 33 ms budget at 30 fps, holding 30.2 fps
+throughout. The airspace half is roughly five times its desktop cost while the airport half is
+about twice — consistent with the dash re-tessellation being CPU work on a much slower CPU, and
+the symbol drawing being GPU work that was never the bottleneck.
+
+That the layer renders *at all* under real ES 2.0 is worth stating separately. The dashed Class D
+boundaries go through femtovg's `dashed_with_tolerance`, which re-tessellates the path, and the
+desktop harness warns in as many words that it "will NOT catch ES2-incompatible rendering" because
+it gets ES 3.2. This is the first run where that warning did not apply.
 
 ## Currency
 

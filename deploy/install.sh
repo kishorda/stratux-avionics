@@ -89,6 +89,33 @@ step "Installing the binary"
 run install -m 0755 "$BINARY" "$PREFIX/bin/avionics"
 note "installed $PREFIX/bin/avionics"
 
+# --- airport and airspace data -----------------------------------------------------------
+#
+# Beside the binary, because that is the first place the display looks. Staging it to /tmp is not
+# enough: after installation the binary runs from $PREFIX/bin and would find nothing there, and a
+# missing chart is silent by design — the map layer simply does not draw. Which means getting this
+# wrong produces a display that looks finished and quietly has no airports on it.
+step "Installing the airport and airspace data"
+CHART="${AVIONICS_CHART:-}"
+if [[ -z "$CHART" ]]; then
+  for candidate in \
+    "$SCRIPT_DIR/conus.chart" \
+    /tmp/conus.chart \
+    "$SCRIPT_DIR/../crates/avionics-ui/data/conus.chart"
+  do
+    [[ -f "$candidate" ]] && CHART="$candidate" && break
+  done
+fi
+if [[ -n "$CHART" ]]; then
+  echo "    copying $CHART ($(du -h "$CHART" | cut -f1))"
+  run install -m 0644 "$CHART" "$PREFIX/bin/conus.chart"
+  note "installed $PREFIX/bin/conus.chart"
+else
+  # Not fatal, for the same reason it is not fatal at runtime: traffic is why the panel exists.
+  echo "    no conus.chart found — the map layer will not draw."
+  echo "    Build it with tools/chartdata and redeploy; see docs/airspace-and-airports.md."
+fi
+
 # --- verify before wiring anything up ----------------------------------------------------
 step "Verifying the install"
 if (( DRY_RUN )); then

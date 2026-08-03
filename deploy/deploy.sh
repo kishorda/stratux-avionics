@@ -72,8 +72,13 @@ fi
 # install.sh reads the systemd unit from alongside itself, so the whole directory has to travel,
 # not just the binary. Without this the documented install flow fails at the last step.
 echo "==> Copying the deploy scripts to $HOST:$STAGE"
+# `debs/` and `keyrings/` are sysroot material for the *dev machine* — fetch-target-debs.sh writes
+# them, install.sh never reads them, and they are 58 MB of the 60 this rsync would otherwise push
+# over wifi to a Pi that has no use for them.
 rsync -az --info=progress2 --delete \
   --exclude '__pycache__' \
+  --exclude 'debs' \
+  --exclude 'keyrings' \
   deploy/ "$HOST:$STAGE/"
 rsync -az README.md "$HOST:$STAGE/../avionics-README.md" 2>/dev/null || true
 

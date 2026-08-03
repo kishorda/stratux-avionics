@@ -343,7 +343,7 @@ device.
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
-| M7 | Airports + airspace map layer | **renders offscreen** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks, and tap-to-inspect with frequencies and station weather; drawn and measured on the desktop, **not yet seen on the panel** |
+| M7 | Airports + airspace map layer | **on the panel** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; installed on the Pi 2026-08-03 and measured on the real VC4 under GLES 2.0 |
 
 382 tests passing, clippy clean.
 
@@ -910,6 +910,18 @@ replay, per page:
 | Weather, decoded | 8 fps | **3.68 ms** | 141.7 ms (frame 1) | **7.4 ms** | 2.9% |
 | Weather, list | 8 fps | **4.09 ms** | 65.8 ms (frame 1) | **8.5 ms** | 3.3% |
 
+The map layer, measured the same way on 2026-08-03 but against the outdoor capture at 20 nm, so
+own-ship and the New York Class B are real:
+
+| Map layer | mean draw | worst steady |
+| --- | --- | --- |
+| `--map off` | 2.05 ms | 12.70 ms |
+| `--map apt` | 2.40 ms | 13.44 ms |
+| `--map all` | 5.39 ms | 16.33 ms |
+
+Airports cost 0.35 ms a frame and airspace 3.0 ms, holding 30.2 fps throughout. The airspace half
+is the dashed Class D boundaries, which femtovg re-tessellates on the CPU.
+
 `worst steady` excludes the first 30 frames *and* the first 5 seconds. Both floors are needed: a
 frame count is reached in very different wall time at 8 Hz and 60 Hz, and an elapsed time can be
 satisfied by a single frame that took seconds to present. Reporting **which frame** the worst
@@ -970,6 +982,9 @@ ground you often hear nothing. Weather needs altitude, so M5 stays unvalidated u
   not that tap and two-finger-tap work.
 - **NEXRAD geo-referencing.** The mosaic renders, but has not been checked against an independent
   archived NWS mosaic for the same period.
+- **Airspace position.** The boundaries draw on the panel and cost what the table above says, but
+  no one has yet held the panel next to a sectional and checked that a Class B shelf is where it
+  claims to be. Until that happens the `NOT FOR NAVIGATION` banner is the whole of the guarantee.
 - **The AP's uneven per-channel behaviour**, described under [the WiFi AP](#the-wifi-ap--the-fallback-and-it-is-marginal).
 
 ## Reference notes
