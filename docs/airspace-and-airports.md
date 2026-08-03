@@ -197,11 +197,17 @@ paths because *"femtovg emits a GL draw per `stroke_path`, and on the vc4's tile
 every one of those carries binning cost"*. Airspace batches by class for the same reason: three
 paths, not thirty-three.
 
-**Heliports are the entire clutter problem.** 287 within 10 nm of downtown Los Angeles, because LA
-fire code mandated rooftop helipads for decades. Fixed-wing worst case over the same country is 35.
-So heliports are written to the file — they are only 6,710 records — and never drawn by default.
-The data being present and the layer being off is the right split: it costs nothing to carry, and
-the day someone wants a helipad layer the file already has it.
+**Heliports are the clutter problem** — 291 within 10 nm of downtown Los Angeles against 5
+fixed-wing fields, because LA fire code mandated rooftop helipads for decades. They are written to
+the file and never drawn by default. Carrying them costs 6,710 records, and the day someone wants a
+helipad layer the file already has it.
+
+One correction to that figure, found when the runtime query was first tested against the built
+file: **208 of those 291 are OurAirports placeholders** with no real identifier, and the builder has
+already dropped them. So the identifier filter, which exists for legibility rather than for
+decluttering, turns out to do most of the decluttering as a side effect. The tier still matters —
+it is the difference between 83 symbols and 5 — but it is not carrying the load the first
+measurement credited it with.
 
 ### Declutter tiers
 
@@ -237,6 +243,25 @@ airport query O(cells touched) instead of a scan of 20,736 records — at 30 Hz 
 several hundred thousand bounding-box tests a second, which is the same order as the entire current
 frame cost. Airspace is only 1,486 polygons with bounding boxes already in the record, so a linear
 scan is a few microseconds and a second index would be machinery earning nothing.
+
+## What it costs to draw
+
+Measured on the dev machine with the offscreen presenter, 400 frames of the synthetic Broomfield
+session — which starts under the Denver Class B, so the airspace query is doing real work:
+
+| | mean draw | worst steady |
+| --- | --- | --- |
+| `--map off`, 10 nm | 0.65 ms | 1.73 ms |
+| `--map apt`, 10 nm | 0.83 ms | 3.79 ms |
+| `--map all`, 10 nm | 1.19 ms | 8.04 ms |
+| `--map off`, 40 nm | 0.67 ms | 6.73 ms |
+| `--map apt`, 40 nm | 0.76 ms | 7.58 ms |
+| `--map all`, 40 nm | 1.47 ms | 10.81 ms |
+
+So airports cost about 0.15 ms and airspace about 0.6 ms per frame here. **These are desktop
+numbers and do not transfer to the Pi** — the README's frame-cost table was measured on the target
+and this has not been. What they do establish is the shape: the layer is a fraction of a frame, and
+the airspace half is four times the airport half, which is the dash re-tessellation.
 
 ## Currency
 

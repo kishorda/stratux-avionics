@@ -106,6 +106,7 @@ pub fn apply_key_at(
         SoftKey::ToggleOrientation => view.toggle_orientation(),
         SoftKey::CycleAltitudeFilter => view.cycle_altitude_filter(),
         SoftKey::ToggleUnderlay => view.show_weather_underlay = !view.show_weather_underlay,
+        SoftKey::CycleMapLayers => view.cycle_map_layers(),
         SoftKey::ScrollUp => scroll_weather(view, TapZone::BodyUpper, weather_rows, weather_total),
         SoftKey::ScrollDown => scroll_weather(view, TapZone::BodyLower, weather_rows, weather_total),
         SoftKey::ToggleDecode => {

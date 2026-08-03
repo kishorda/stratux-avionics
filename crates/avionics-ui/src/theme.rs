@@ -43,6 +43,27 @@ pub struct Theme {
     pub caution: Color,
     pub warning: Color,
 
+    /// Class B, C and D boundaries, in the sectional convention: B and D share a blue and are told
+    /// apart by D being dashed, C is magenta.
+    ///
+    /// **The blue is indigo, not the rings' cyan.** The first attempt used a blue close to the
+    /// sectional's and it read as more range rings on the panel — `ring` is (90, 190, 250), and two
+    /// blue curves of similar hue are not distinguishable at a glance in daylight. Pushing the hue
+    /// towards violet and dropping the green channel from 155 to 132 separates them.
+    ///
+    /// Class C is the other one to watch: `nexrad.rs` paints extreme precipitation magenta too.
+    /// Those are told apart by weight rather than hue — weather is a saturated fill, airspace a
+    /// thin stroke — which is why this stays well short of `RAMP`'s (210, 45, 195).
+    pub airspace_b: Color,
+    pub airspace_c: Color,
+    pub airspace_d: Color,
+
+    /// Airports and their labels. A recessive neutral rather than a fourth saturated hue: the
+    /// sectional's blue and magenta are spent on airspace, and a background feature should read as
+    /// one.
+    pub airport: Color,
+    pub airport_label: Color,
+
     pub font_size_tag: f32,
     pub font_size_small: f32,
     pub font_size_normal: f32,
@@ -81,6 +102,13 @@ impl Theme {
             good: Color::rgb(120, 235, 160),
             caution: Color::rgb(255, 195, 60),
             warning: Color::rgb(255, 90, 70),
+
+            airspace_b: Color::rgba(128, 132, 248, 205),
+            airspace_c: Color::rgba(206, 108, 186, 195),
+            airspace_d: Color::rgba(128, 132, 248, 165),
+
+            airport: Color::rgb(150, 172, 188),
+            airport_label: Color::rgba(162, 184, 200, 220),
 
             font_size_tag: 11.0,
             font_size_small: 11.0,

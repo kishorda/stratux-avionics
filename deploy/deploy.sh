@@ -55,6 +55,20 @@ if [[ "$BIN" == "avionics" && "${WITH_REPLAY:-1}" == "1" ]]; then
   rsync -az "target/$TARGET/release/replay" "$HOST:$DEST/replay"
 fi
 
+# The airport and airspace file travels beside the binary, which is the first place the display
+# looks for it. Missing is not fatal — the map layer simply does not draw — so this is a warning
+# rather than a failure, and WITH_CHART=0 skips it on a tight card.
+CHART="$ROOT/crates/avionics-ui/data/conus.chart"
+if [[ "$BIN" == "avionics" && "${WITH_CHART:-1}" == "1" ]]; then
+  if [[ -f "$CHART" ]]; then
+    echo "==> Copying the chart to $HOST:$DEST/conus.chart ($(du -h "$CHART" | cut -f1))"
+    rsync -az --info=progress2 "$CHART" "$HOST:$DEST/conus.chart"
+  else
+    echo "!!! $CHART is missing; the panel will run without the airport and airspace layer" >&2
+    echo "    Build it with tools/chartdata — see docs/airspace-and-airports.md" >&2
+  fi
+fi
+
 # install.sh reads the systemd unit from alongside itself, so the whole directory has to travel,
 # not just the binary. Without this the documented install flow fails at the last step.
 echo "==> Copying the deploy scripts to $HOST:$STAGE"

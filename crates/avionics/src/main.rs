@@ -63,6 +63,9 @@ View
   --ahrs-page          start on the attitude page
   --decode             start with the weather report expanded
   --no-underlay        don't draw the NEXRAD precipitation underlay
+  --map LAYERS         map layer: off, apt, all             [default: apt]
+  --chart FILE         airport and airspace file
+                       [default: conus.chart beside the binary, then the repo copy]
 
 Other
   --frames N           render N frames then exit; 0 = until Ctrl-C
@@ -74,6 +77,51 @@ Other
 enum Source {
     Live { host: String, port: u16 },
     Replay { path: PathBuf, speed: f64, repeat: bool },
+}
+
+/// Attach the airport and airspace file, if there is one.
+///
+/// **Never fatal.** A missing, unreadable or corrupt chart means the map layer does not draw; it
+/// must not stop the panel showing traffic, which is the reason the display exists. An explicit
+/// `--chart` that fails is still only a warning, but it says so loudly, because the pilot asked
+/// for that file by name and would otherwise be looking at a blank map wondering why.
+fn attach_chart(ui: &mut Ui, args: &Args) {
+    let explicit = args.chart.is_some();
+    let candidates: Vec<PathBuf> = match &args.chart {
+        Some(path) => vec![path.clone()],
+        // Beside the binary is where deploy.sh puts it on the aircraft; the repo copy is what a
+        // `cargo run` on the dev machine finds.
+        None => {
+            let mut paths = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    paths.push(dir.join("conus.chart"));
+                }
+            }
+            paths.push(PathBuf::from("crates/avionics-ui/data/conus.chart"));
+            paths
+        }
+    };
+
+    for path in &candidates {
+        match avionics_ui::Chart::load(path) {
+            Ok(chart) => {
+                tracing::info!(
+                    path = %path.display(),
+                    airports = chart.airport_count(),
+                    airspace = chart.airspace_count(),
+                    "map layer loaded"
+                );
+                ui.set_chart(Some(chart));
+                return;
+            }
+            Err(e) if explicit => tracing::warn!(path = %path.display(), error = %e, "--chart could not be loaded; no map layer"),
+            Err(_) => {}
+        }
+    }
+    if !explicit {
+        tracing::info!("no chart file found; the map layer is off");
+    }
 }
 
 #[derive(Debug)]
@@ -89,6 +137,7 @@ struct Args {
     frames: u64,
     check: bool,
     view: ViewState,
+    chart: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -108,6 +157,7 @@ impl Default for Args {
             frames: 0,
             check: false,
             view: ViewState::default(),
+            chart: None,
         }
     }
 }
@@ -151,6 +201,15 @@ fn parse_args() -> Result<Option<Args>> {
             "--ahrs-page" => args.view.page = avionics_ui::Page::Ahrs,
             "--decode" => args.view.weather_decode = true,
             "--no-underlay" => args.view.show_weather_underlay = false,
+            "--chart" => args.chart = Some(PathBuf::from(value()?)),
+            "--map" => {
+                args.view.map_layers = match value()?.to_ascii_lowercase().as_str() {
+                    "off" => avionics_ui::MapLayers::Off,
+                    "apt" | "airports" => avionics_ui::MapLayers::Airports,
+                    "all" | "full" => avionics_ui::MapLayers::Full,
+                    other => bail!("--map must be off, apt or all, not {other:?}"),
+                }
+            }
             "--range" => {
                 let v: f32 = value()?.parse().context("bad --range")?;
                 if !ViewState::RANGES.contains(&v) {
@@ -362,6 +421,7 @@ fn run_window(args: &Args, state: Shared) -> Result<()> {
     let mut presenter = DesktopPresenter::new(&config)?;
     let theme = Theme::dark();
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
+    attach_chart(&mut ui, args);
     let mut view = args.view.clone();
     let mut timing = RenderTiming::default();
     let mut pacer = FramePacer::default();
@@ -802,6 +862,7 @@ fn run_kms(args: &Args, state: Shared, runtime: tokio::runtime::Handle) -> Resul
     let mut presenter = KmsPresenter::new(&config)?;
     let theme = Theme::dark();
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
+    attach_chart(&mut ui, args);
     let mut view = args.view.clone();
     let mut timing = RenderTiming::default();
 
@@ -915,6 +976,7 @@ fn run_offscreen(args: &Args, state: Shared) -> Result<()> {
     let mut presenter = OffscreenPresenter::new(&config)?;
     let theme = Theme::dark();
     let mut ui = Ui::new(presenter.begin_frame(theme.background)?, theme.clone())?;
+    attach_chart(&mut ui, args);
     let view = args.view.clone();
     let mut timing = RenderTiming::default();
 

@@ -48,6 +48,49 @@ pub fn draw(
         Page::Weather => weather(ui, canvas, view, layout, state.weather.len()),
         Page::Ahrs => ahrs(ui, canvas, state, layout),
     }
+
+    if show_navigation_banner(ui, view) {
+        navigation_banner(ui, canvas, layout);
+    }
+}
+
+/// Whether the `NOT FOR NAVIGATION` banner belongs on screen.
+///
+/// Only the plan view, only with airspace drawn, and only when there is a chart to draw it from.
+///
+/// # Why airspace and not airports
+///
+/// An airport symbol slightly out of place costs nothing; the worst it can do is clutter. An
+/// airspace boundary is something a pilot may fly *relative to*, and traffic is cross-checked out
+/// of the window in a way a Class B shelf is not. The banner marks the moment the display starts
+/// making a claim of that kind, so it follows the airspace layer and nothing else.
+///
+/// # Why not "only when a boundary is actually visible"
+///
+/// Because it would blink on and off as the aircraft crossed in and out of coverage, and a caveat
+/// that comes and going teaches the eye to stop reading it. The selection is what raises it.
+pub fn show_navigation_banner(ui: &Ui, view: &ViewState) -> bool {
+    view.page == Page::PlanView && view.map_layers.shows_airspace() && ui.chart().is_some()
+}
+
+/// Centred in the bar, between the selection readout on the left and own-ship's track and speed on
+/// the right — the one part of this bar that is otherwise empty.
+///
+/// Amber, like the attitude page's standing banner, because it is the same kind of statement: not
+/// an alarm, and not something that should read as ordinary chrome either.
+fn navigation_banner(ui: &Ui, canvas: &mut Canvas, layout: &Layout) {
+    let theme = &ui.theme;
+    let mut paint = Paint::color(theme.caution);
+    paint.set_font(&[ui.font()]);
+    paint.set_font_size(theme.font_size_tag);
+    paint.set_text_align(Align::Center);
+    paint.set_text_baseline(Baseline::Middle);
+    let _ = canvas.fill_text(
+        layout.width * 0.5,
+        baseline(layout),
+        "AIRSPACE \u{2014} NOT FOR NAVIGATION",
+        &paint,
+    );
 }
 
 /// Baseline for text in the bar, matching the status bar's vertical centring.

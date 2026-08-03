@@ -19,10 +19,12 @@
 //! ```
 
 pub mod ahrspage;
+pub mod chart;
 pub mod font;
 pub mod footerbar;
 pub mod glossary;
 pub mod interact;
+pub mod maplayer;
 pub mod metar;
 pub mod nexrad;
 pub mod pagestrip;
@@ -44,6 +46,7 @@ use avionics_gfx::femtovg::FontId;
 use avionics_gfx::Canvas;
 use stratux_client::AppState;
 
+pub use chart::Chart;
 pub use nexrad::Mosaic;
 pub use projection::{Orientation, Projection};
 pub use reckon::ReckonConfig;
@@ -151,6 +154,56 @@ pub enum CageState {
     Done { ok: bool },
 }
 
+/// How much of the map layer is drawn.
+///
+/// # Why airspace is a separate step and not simply "the map"
+///
+/// Airports and airspace look like one feature and are not. An airport symbol fifty metres out
+/// costs nothing; the worst it can do is clutter. An airspace boundary is something a pilot may
+/// fly *relative to*, and one drawn wide, or one AIRAC cycle stale, invites exactly the violation
+/// it appears to prevent. Traffic is cross-checked out of the window and a Class B shelf is not.
+///
+/// So the two are separable, and turning airspace on is what raises the `NOT FOR NAVIGATION`
+/// banner in [`crate::footerbar`]. Airports alone make no claim a pilot would fly against, so they
+/// raise nothing — which is also why they are the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapLayers {
+    Off,
+    /// Airports only. The default: useful, and it asserts nothing about airspace.
+    Airports,
+    /// Airports and Class B/C/D boundaries.
+    Full,
+}
+
+impl MapLayers {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Airports, Self::Full];
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Airports,
+            Self::Airports => Self::Full,
+            Self::Full => Self::Off,
+        }
+    }
+
+    pub fn shows_airports(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    pub fn shows_airspace(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Shares its text with the soft key, so the key and the page cannot disagree.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "MAP OFF",
+            Self::Airports => "MAP APT",
+            Self::Full => "MAP ALL",
+        }
+    }
+}
+
 /// How long an armed cage waits for its confirming press before lapsing.
 pub const CAGE_ARM_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -173,6 +226,8 @@ pub struct ViewState {
     pub weather_decode: bool,
     /// Draw the NEXRAD underlay on the plan view.
     pub show_weather_underlay: bool,
+    /// How much of the airport and airspace layer to draw. See [`MapLayers`].
+    pub map_layers: MapLayers,
     /// Progress of an AHRS cage request. See [`CageState`].
     pub cage: CageState,
     /// When `cage` last changed, for the arm timeout and result dwell.
@@ -194,6 +249,9 @@ impl Default for ViewState {
             weather_scroll: 0,
             weather_decode: false,
             show_weather_underlay: true,
+            // Airports on, airspace off. Airports are the half that carries no navigation claim,
+            // so they cost nothing to have up; airspace is opt-in and says so on the panel.
+            map_layers: MapLayers::Airports,
             cage: CageState::Idle,
             cage_changed: None,
         }
@@ -233,6 +291,11 @@ impl ViewState {
     /// Step to the next altitude band, wrapping.
     pub fn cycle_altitude_filter(&mut self) {
         self.altitude_filter = self.altitude_filter.cycle();
+    }
+
+    /// Step the map layer through off, airports, airports and airspace.
+    pub fn cycle_map_layers(&mut self) {
+        self.map_layers = self.map_layers.cycle();
     }
 
     pub fn set_cage(&mut self, state: CageState, now: Instant) {
@@ -288,6 +351,10 @@ pub struct FrameStats {
     /// Tags dropped because there was nowhere to put them without overlapping. The symbols are
     /// still drawn; only the labels were lost.
     pub tags_suppressed: usize,
+    /// Airport symbols drawn from the chart file, after the range tier and the panel cull.
+    pub airports_drawn: usize,
+    /// Airspace volumes whose boundary reached the screen.
+    pub airspace_drawn: usize,
 }
 
 /// Holds the loaded font and the tuning constants. Cheap to keep for the process lifetime.
@@ -297,6 +364,7 @@ pub struct Ui {
     pub reckon: ReckonConfig,
     pub threat: ThreatConfig,
     mosaic: Mosaic,
+    chart: Option<Chart>,
 }
 
 impl Ui {
@@ -308,7 +376,20 @@ impl Ui {
             reckon: ReckonConfig::default(),
             threat: ThreatConfig::default(),
             mosaic: Mosaic::new(nexrad::MosaicConfig::default()),
+            chart: None,
         })
+    }
+
+    /// Attach the airport and airspace file, replacing any already loaded.
+    ///
+    /// Separate from [`Ui::new`] and fallible at the call site on purpose: a missing or corrupt
+    /// chart means "no map layer", never a startup failure. Traffic is why the panel exists.
+    pub fn set_chart(&mut self, chart: Option<Chart>) {
+        self.chart = chart;
+    }
+
+    pub fn chart(&self) -> Option<&Chart> {
+        self.chart.as_ref()
     }
 
     /// Replace the mosaic configuration, e.g. to shrink the texture on a memory-tight board.
@@ -392,7 +473,17 @@ impl Ui {
             }
         }
 
-        planview::draw(self, canvas, state, view, now, layout, projection)
+        // The map layer sits between the weather and the rings: over the precipitation, which is
+        // the only thing on screen it should ever obscure, and under everything that moves.
+        let map = match projection.as_ref() {
+            Some(projection) => maplayer::draw(self, canvas, view, layout, projection),
+            None => maplayer::Drawn::default(),
+        };
+
+        let mut stats = planview::draw(self, canvas, state, view, now, layout, projection);
+        stats.airports_drawn = map.airports;
+        stats.airspace_drawn = map.airspace;
+        stats
     }
 }
 

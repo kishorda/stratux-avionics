@@ -113,6 +113,32 @@ GPS track and says which one it is showing.
 **`AHRS — NOT FOR PRIMARY REFERENCE` is on screen permanently and deliberately.** There is no
 certified IMU here; the attitude comes from a hobby sensor and GPS-derived track.
 
+### Airports and airspace
+
+![Plan view with airport symbols and identifiers](docs/images/map-airports.png)
+
+`MAP APT` — airports only. Symbols are sized by tier and carry the identifier a pilot says: `BDU`,
+`EIK`, `7CO0`, not `KBDU`. A filled centre means a hard runway. Labels sit below the symbol, as they
+do on a sectional, and appear at 10 nm and below — closer in than that they would be competing with
+traffic tags for the same space, and traffic wins.
+
+![The same area with Class B and Class D boundaries drawn](docs/images/map-airspace.png)
+
+`MAP ALL` adds Class B, C and D. Denver's Class B shelves are the indigo polygons; the dashed circle
+around own-ship is Broomfield's Class D. Sectional convention — B and D share a blue and are told
+apart by the dash, C is magenta — but the blue is deliberately **indigo rather than the sectional's**,
+because the range rings are already cyan and the first attempt read as more rings.
+
+**`AIRSPACE — NOT FOR NAVIGATION` appears in the footer whenever airspace is drawn**, and only then.
+Airports alone raise nothing: a misplaced airport symbol costs clutter, whereas a boundary is
+something a pilot might fly relative to, and traffic can be checked out of the window in a way a
+Class B shelf cannot. That asymmetry is why the two layers are separable at all.
+
+The data is built by [`tools/chartdata`](tools/chartdata) from OurAirports and the FAA's Class
+Airspace layer, both public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
+for the measurements behind every threshold, including why a Class D arrives as 3,256 vertices and
+leaves as 84.
+
 ### Controls
 
 The key strips are the primary interface. Labels are redrawn every frame and toggles are
@@ -128,7 +154,11 @@ There are two strips, one down each edge. The **left** strip is page-specific fu
 | 3 | `ALT NRM/ABV/BLW/ALL` | `DECODE` / `RAW` | — |
 | 4 | `N-UP` / `TRK-UP` | — | — |
 | 5 | `WX ON` / `WX OFF` | — | — |
-| 6 | — | — | `LEVEL` |
+| 6 | `MAP OFF/APT/ALL` | — | `LEVEL` |
+
+The plan view's strip is now full at six. Seven slots would be 60.9 px a key against the 60.0 px
+floor the hittability test holds the design to, so the next page-specific control has to displace
+something rather than being appended — which is why both map layers share one key.
 
 Splitting navigation onto its own edge is what made room to grow: every slot on the left is now
 available to the page that is showing, rather than one being permanently spent on a `PAGE` key.
@@ -181,6 +211,12 @@ cargo build --release -p avionics -p replay
     --out /tmp/shots/wxd  --frames 400 --dump-every 80 --weather-page --decode
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/ahrs --frames 400 --dump-every 80 --ahrs-page
+
+# the map layer — the synth session starts at Broomfield CO, under the Denver Class B:
+./target/release/avionics --replay /tmp/synth.jsonl --offscreen \
+    --out /tmp/shots/map-apt --frames 40 --range 10 --map apt
+./target/release/avionics --replay /tmp/synth.jsonl --offscreen \
+    --out /tmp/shots/map-all --frames 40 --range 20 --map all
 
 # and the live one, from the recorded outdoor session:
 ./target/release/avionics --replay captures/2026-08-02-outdoor-gps-3d-fix/session.jsonl \
@@ -273,9 +309,9 @@ device.
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
-| M7 | Airports + airspace map layer | **data only** — `tools/chartdata` builds the CONUS file (20,736 airports, 1,408 Class B/C/D polygons); nothing drawn on the panel yet |
+| M7 | Airports + airspace map layer | **renders offscreen** — 20,736 airports and 1,408 Class B/C/D polygons, drawn and measured on the desktop; **not yet seen on the panel** |
 
-308 tests passing, clippy clean.
+327 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -1093,7 +1129,9 @@ points `linker` at `deploy/cross-cc-<triple>.sh` instead of at the cross-gcc dir
 No terrain. No traffic audio alerts. No flight logging or track recording. No touch-driven Stratux
 configuration — the web UI on the retained AP covers that.
 
-Airports and airspace **were** on this list, and are now being built: the data pipeline
-(`tools/chartdata`) and the file it produces are in the repo, and nothing is drawn on the panel
-yet. See [docs/airspace-and-airports.md](docs/airspace-and-airports.md) for the design, the
-measurements behind each threshold, and why the vertical part is deliberately last.
+Airports and airspace **were** on this list and now draw — see
+[the panel section](#airports-and-airspace) and
+[docs/airspace-and-airports.md](docs/airspace-and-airports.md). What is still deliberately absent is
+the **vertical** part: the file carries every volume's floor and ceiling, and nothing yet highlights
+the shelf you are in or about to enter. That is the most useful half and the half most able to be
+confidently wrong, so the lateral boundaries get flown and checked against a sectional first.

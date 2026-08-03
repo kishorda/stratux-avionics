@@ -44,6 +44,8 @@ pub enum SoftKey {
     ToggleUnderlay,
     /// Step the vertical filter through its bands. The altitude equivalent of RangeUp.
     CycleAltitudeFilter,
+    /// Step the map layer through off, airports, airports and airspace.
+    CycleMapLayers,
     ScrollUp,
     ScrollDown,
     /// Tell the AHRS the aircraft is straight and level. Two presses: arm, then confirm.
@@ -67,7 +69,11 @@ pub fn keys_for(page: Page) -> [Option<SoftKey>; SLOTS] {
             Some(SoftKey::CycleAltitudeFilter),
             Some(SoftKey::ToggleOrientation),
             Some(SoftKey::ToggleUnderlay),
-            None,
+            // The last free slot on this page. Growing the strip to seven would give 60.9 px a
+            // key against the 60.0 px floor `strip_is_wide_enough_to_hit_on_the_target_panel`
+            // holds the design to, which is not headroom — so both map layers share one key
+            // rather than taking one each.
+            Some(SoftKey::CycleMapLayers),
         ],
         Page::Weather => [
             Some(SoftKey::ScrollUp),
@@ -110,6 +116,7 @@ pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
         // Shares its text with the footer readout, so the key and the page can never disagree
         // about which band is selected.
         SoftKey::CycleAltitudeFilter => view.altitude_filter.label(),
+        SoftKey::CycleMapLayers => view.map_layers.label(),
         SoftKey::ScrollUp => "UP",
         SoftKey::ScrollDown => "DOWN",
         // Labelled with what pressing it gives you, unlike the state-labelled toggles above:
@@ -210,6 +217,10 @@ pub fn draw(ui: &Ui, canvas: &mut Canvas, view: &ViewState, stats: &crate::Frame
             SoftKey::ToggleUnderlay if view.show_weather_underlay => theme.good,
             // Amber only while traffic is actually being held back by it. See `draw`.
             SoftKey::CycleAltitudeFilter if stats.targets_outside_altitude > 0 => theme.caution,
+            // Amber for airspace, not green: it is the state that raises the NOT FOR NAVIGATION
+            // banner, and a key that looked like every other "on" toggle would undersell that.
+            SoftKey::CycleMapLayers if view.map_layers.shows_airspace() => theme.caution,
+            SoftKey::CycleMapLayers if view.map_layers.shows_airports() => theme.good,
             // An armed cage is amber: it is one press from changing the attitude reference, and
             // that state must not look like every other key on the strip.
             SoftKey::ToggleDecode if view.weather_decode => theme.good,
@@ -364,10 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_view_keeps_every_key_it_had_when_the_strip_grew() {
-        // The sixth slot was added for ALT, and the point of adding one rather than reusing one
-        // was that nothing already on the strip moved. If a later change shuffles these, it should
-        // have to say so here.
+    fn the_plan_view_keys_are_pinned_in_order() {
+        // Every key on this page and where it sits. The point is not the list, it is that moving a
+        // key has to be a deliberate edit here: these are pressed by feel in turbulence, and a key
+        // that quietly migrates because a neighbour was added is the failure this prevents.
+        //
+        // MAP took the last free slot. The strip is now full at six, and seven would give 60.9 px
+        // a key against the 60.0 px floor the hittability test holds — so the next page-specific
+        // control has to displace something rather than being appended.
         let keys = keys_for(Page::PlanView);
         assert_eq!(
             keys,
@@ -377,9 +392,23 @@ mod tests {
                 Some(SoftKey::CycleAltitudeFilter),
                 Some(SoftKey::ToggleOrientation),
                 Some(SoftKey::ToggleUnderlay),
-                None,
+                Some(SoftKey::CycleMapLayers),
             ]
         );
+        assert!(keys.iter().all(Option::is_some), "the strip is full");
+    }
+
+    #[test]
+    fn the_map_key_reports_the_layer_it_is_in() {
+        // Same rule as the orientation and altitude keys: labelled with where you are, not with
+        // where pressing it would take you.
+        let mut view = ViewState::default();
+        for _ in 0..crate::MapLayers::ALL.len() {
+            assert_eq!(label(SoftKey::CycleMapLayers, &view), view.map_layers.label());
+            view.cycle_map_layers();
+        }
+        // ... and the cycle returns to where it started rather than stranding a state.
+        assert_eq!(view.map_layers, ViewState::default().map_layers);
     }
 
     #[test]
