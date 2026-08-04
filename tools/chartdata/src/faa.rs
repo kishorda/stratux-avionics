@@ -26,9 +26,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::format::{
-    Airport, Frequency, Kind, Runway, Tier, FLAG_HARD_SURFACE, FLAG_LIGHTED,
-};
+use crate::format::{Airport, Frequency, Kind, Runway, Tier, FLAG_HARD_SURFACE, FLAG_LIGHTED};
 
 /// Airports are filtered by the same box the airspace uses, not by a list of state codes.
 ///
@@ -45,8 +43,21 @@ use crate::airspace::KEEP_BOX;
 /// prefix-matched and which this replaces. Mixed surfaces are included when the hard component
 /// leads: `ASP+GRS` is asphalt with a grass shoulder, not the other way round.
 const HARD_SURFACES: [&str; 15] = [
-    "ASPH", "CONC", "ASP+DIRT", "ASP+GRS", "ASP+GRVL", "ASP+TRTD", "CONC+ASPH", "CONC+GRS",
-    "CONC+GRVL", "CONC+TRTD", "PSP", "BRICK", "COMP", "MATS", "METAL",
+    "ASPH",
+    "CONC",
+    "ASP+DIRT",
+    "ASP+GRS",
+    "ASP+GRVL",
+    "ASP+TRTD",
+    "CONC+ASPH",
+    "CONC+GRS",
+    "CONC+GRVL",
+    "CONC+TRTD",
+    "PSP",
+    "BRICK",
+    "COMP",
+    "MATS",
+    "METAL",
 ];
 
 /// A public aerodrome needs this much hard runway to be drawn at every range.
@@ -125,7 +136,8 @@ pub fn parse(
                 stats.dropped_no_position += 1;
                 continue;
             };
-            if !(KEEP_BOX.0..=KEEP_BOX.1).contains(&lat) || !(KEEP_BOX.2..=KEEP_BOX.3).contains(&lon)
+            if !(KEEP_BOX.0..=KEEP_BOX.1).contains(&lat)
+                || !(KEEP_BOX.2..=KEEP_BOX.3).contains(&lon)
             {
                 stats.dropped_non_conus += 1;
                 continue;
@@ -325,9 +337,11 @@ fn runway_index(pages: &[String]) -> Result<HashMap<String, RunwayFacts>> {
                 }),
             }
         }
-        facts
-            .headings
-            .sort_by(|a, b| b.length_ft.cmp(&a.length_ft).then(a.heading_deg.cmp(&b.heading_deg)));
+        facts.headings.sort_by(|a, b| {
+            b.length_ft
+                .cmp(&a.length_ft)
+                .then(a.heading_deg.cmp(&b.heading_deg))
+        });
         out.insert(airport, facts);
     }
     Ok(out)
@@ -455,7 +469,10 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].label, "MMU");
         assert_eq!(stats.dropped_non_conus, 1);
-        assert_eq!(stats.dropped_not_operational, 2, "CLOSED and INDEFINITE both go");
+        assert_eq!(
+            stats.dropped_not_operational, 2,
+            "CLOSED and INDEFINITE both go"
+        );
     }
 
     #[test]
@@ -480,7 +497,11 @@ mod tests {
         assert_eq!(t("MID"), Tier::Paved);
         // Any paved runway reaches the Paved tier. A length threshold here was wrong twice —
         // Somerset at 2,739 ft and Palo Alto at 2,443 — so there is no longer one.
-        assert_eq!(t("SML"), Tier::Paved, "1800 ft of asphalt is still a paved public field");
+        assert_eq!(
+            t("SML"),
+            Tier::Paved,
+            "1800 ft of asphalt is still a paved public field"
+        );
         assert_eq!(t("PVT"), Tier::Minor, "private stays close in");
         assert_eq!(t("HEL"), Tier::Heliport);
     }
@@ -501,8 +522,16 @@ mod tests {
         ])];
         let (out, _) = parse(&pages, &rw, &[]).unwrap();
         let t = |l: &str| out.iter().find(|a| a.label == l).unwrap().tier;
-        assert_eq!(t("EDW"), Tier::Major, "a military airfield is a landmark whatever its access");
-        assert_eq!(t("PVT"), Tier::Minor, "a private civil strip still stays close in");
+        assert_eq!(
+            t("EDW"),
+            Tier::Major,
+            "a military airfield is a landmark whatever its access"
+        );
+        assert_eq!(
+            t("PVT"),
+            Tier::Minor,
+            "a private civil strip still stays close in"
+        );
     }
 
     #[test]
@@ -548,7 +577,10 @@ mod tests {
         let (out, _) = parse(&pages, &rw, &[]).unwrap();
         let h: Vec<u16> = out[0].runways.iter().map(|r| r.heading_deg).collect();
         assert_eq!(h.len(), 2, "got {h:?}");
-        assert_eq!(out[0].runways[0].length_ft, 8000, "longest of the pair wins");
+        assert_eq!(
+            out[0].runways[0].length_ft, 8000,
+            "longest of the pair wins"
+        );
     }
 
     #[test]
@@ -557,15 +589,22 @@ mod tests {
         let mut odd = runway("MET", "05/23", 2000, "ASPH", 0);
         odd["attributes"]["DIM_UOM"] = serde_json::json!("M");
         let (out, _) = parse(&pages, &[airport_page(vec![odd])], &[]).unwrap();
-        assert_eq!(out[0].runway_ft, 0, "2000 metres must not be read as 2000 feet");
+        assert_eq!(
+            out[0].runway_ft, 0,
+            "2000 metres must not be read as 2000 feet"
+        );
     }
 
     #[test]
     fn the_build_is_ordered_independently_of_page_order() {
         let a = airport("AAA", "KAAA", "NJ", "AD", 0);
         let b = airport("BBB", "KBBB", "NJ", "AD", 0);
-        let one = parse(&[airport_page(vec![a.clone(), b.clone()])], &[], &[]).unwrap().0;
-        let two = parse(&[airport_page(vec![b]), airport_page(vec![a])], &[], &[]).unwrap().0;
+        let one = parse(&[airport_page(vec![a.clone(), b.clone()])], &[], &[])
+            .unwrap()
+            .0;
+        let two = parse(&[airport_page(vec![b]), airport_page(vec![a])], &[], &[])
+            .unwrap()
+            .0;
         let labels = |v: &[Airport]| v.iter().map(|x| x.label.clone()).collect::<Vec<_>>();
         assert_eq!(labels(&one), labels(&two));
         assert_eq!(labels(&one), vec!["AAA", "BBB"]);

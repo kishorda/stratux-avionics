@@ -206,7 +206,14 @@ fn draw_airports(
         if airport.hard_surface() && airport.tier <= Tier::Paved {
             centres.circle(x, y, 1.6);
         }
-        add_runway_ticks(chart, &mut ticks, airport, projection, view.range_nm, radius);
+        add_runway_ticks(
+            chart,
+            &mut ticks,
+            airport,
+            projection,
+            view.range_nm,
+            radius,
+        );
         drawn += 1;
     }
 
@@ -356,11 +363,7 @@ pub struct StationWeather {
 ///
 /// Pure and free of [`Canvas`], so the join is testable without a GPU. Returns `None` for a field
 /// with no station identifier at all rather than matching the empty string against everything.
-pub fn station_weather(
-    state: &AppState,
-    station: &str,
-    now: Instant,
-) -> Option<StationWeather> {
+pub fn station_weather(state: &AppState, station: &str, now: Instant) -> Option<StationWeather> {
     if station.is_empty() {
         return None;
     }
@@ -504,7 +507,6 @@ fn draw_airspace_card(
             &body,
         );
     }
-
 }
 
 /// `"SFC - 2500"`, `"1800 - 7000"` — feet MSL, the way a sectional states them.
@@ -566,7 +568,14 @@ fn draw_airport_card(
     };
 
     // Identifier and, to the right, where it is from here.
-    line(canvas, CARD_ROWS[0], theme.font_size_normal, theme.text_primary, airport.label(), false);
+    line(
+        canvas,
+        CARD_ROWS[0],
+        theme.font_size_normal,
+        theme.text_primary,
+        airport.label(),
+        false,
+    );
     if let Some(projection) = projection {
         let (range, bearing) = projection.range_bearing(airport.position);
         line(
@@ -600,7 +609,14 @@ fn draw_airport_card(
             facts.push_str("  LIT");
         }
     }
-    line(canvas, CARD_ROWS[2], theme.font_size_tag, theme.text_secondary, &facts, false);
+    line(
+        canvas,
+        CARD_ROWS[2],
+        theme.font_size_tag,
+        theme.text_secondary,
+        &facts,
+        false,
+    );
 
     // Frequencies, most useful first. 82% of fields have none, and saying so is better than a
     // blank line that reads as a display that did not finish drawing.
@@ -629,7 +645,14 @@ fn draw_airport_card(
     } else {
         theme.text_primary
     };
-    line(canvas, CARD_ROWS[3], theme.font_size_tag, colour, &text, false);
+    line(
+        canvas,
+        CARD_ROWS[3],
+        theme.font_size_tag,
+        colour,
+        &text,
+        false,
+    );
 
     // The weather line, from a METAR already on board. The category badge carries its own colour,
     // so it is drawn separately from the rest of the line rather than inheriting one.
@@ -743,8 +766,7 @@ fn format_visibility(sm: f32) -> String {
 /// panel of a different shape. On the 800x480 panel the content area is 608x426 px around a centre
 /// with a 187.5 px ring, which puts the corners at 1.98 times the selected range.
 pub fn visible_radius_nm(layout: &Layout, projection: &Projection) -> f32 {
-    let half_diagonal =
-        (layout.content_width() * 0.5).hypot(layout.strip_height() * 0.5);
+    let half_diagonal = (layout.content_width() * 0.5).hypot(layout.strip_height() * 0.5);
     half_diagonal / projection.px_per_nm().max(f32::EPSILON)
 }
 
@@ -796,7 +818,10 @@ mod tests {
                 "at {range} nm the query reaches {radius:.1} nm, the corner is at {corner_nm:.1}"
             );
             let span_nm = (bounds.lat_max - bounds.lat_min) as f32 / 1e6 * 60.0 / 2.0;
-            assert!(span_nm >= corner_nm - 0.05, "the box is tighter than the radius asked for");
+            assert!(
+                span_nm >= corner_nm - 0.05,
+                "the box is tighter than the radius asked for"
+            );
         }
     }
 
@@ -820,22 +845,34 @@ mod tests {
             }
             let first = ratios[0];
             for r in &ratios {
-                assert!((r - first).abs() < 1e-3, "ratio drifted with range: {ratios:?}");
+                assert!(
+                    (r - first).abs() < 1e-3,
+                    "ratio drifted with range: {ratios:?}"
+                );
             }
-            assert!(first > 1.0, "the corners are further out than the ring: {first}");
+            assert!(
+                first > 1.0,
+                "the corners are further out than the ring: {first}"
+            );
         }
     }
 
     #[test]
     fn off_panel_symbols_are_skipped_but_edge_ones_survive() {
         let l = layout();
-        assert!(on_panel(&l, l.center.0, l.center.1), "the centre is on the panel");
+        assert!(
+            on_panel(&l, l.center.0, l.center.1),
+            "the centre is on the panel"
+        );
         assert!(on_panel(&l, l.content_x0, l.strip_y0()), "top-left corner");
         assert!(
             on_panel(&l, l.content_x0 - 6.0, l.center.1),
             "a symbol straddling the strip edge is still drawn"
         );
-        assert!(!on_panel(&l, l.content_x0 - 40.0, l.center.1), "well under the strip");
+        assert!(
+            !on_panel(&l, l.content_x0 - 40.0, l.center.1),
+            "well under the strip"
+        );
         assert!(!on_panel(&l, l.center.0, l.height + 5.0), "below the panel");
     }
 
@@ -855,7 +892,11 @@ mod tests {
     }
 
     fn view_at(range_nm: f32, layers: MapLayers) -> ViewState {
-        ViewState { range_nm, map_layers: layers, ..ViewState::default() }
+        ViewState {
+            range_nm,
+            map_layers: layers,
+            ..ViewState::default()
+        }
     }
 
     /// A projection centred on Morristown, the project's reference position.
@@ -1007,7 +1048,10 @@ mod tests {
                 probed += 1;
             }
         }
-        assert!(probed > 3, "expected several airports near Morristown, probed {probed}");
+        assert!(
+            probed > 3,
+            "expected several airports near Morristown, probed {probed}"
+        );
     }
 
     fn weather_state(reports: &[(&str, &str, &str)]) -> AppState {
@@ -1103,8 +1147,16 @@ mod tests {
     #[test]
     fn a_taf_alongside_a_metar_is_flagged() {
         let state = weather_state(&[
-            ("METAR", "KEWR", "METAR KEWR 021651Z 18008KT 10SM FEW250 28/19 A2994"),
-            ("TAF", "KEWR", "TAF KEWR 021543Z 0216/0318 15010G18KT P6SM FEW070"),
+            (
+                "METAR",
+                "KEWR",
+                "METAR KEWR 021651Z 18008KT 10SM FEW250 28/19 A2994",
+            ),
+            (
+                "TAF",
+                "KEWR",
+                "TAF KEWR 021543Z 0216/0318 15010G18KT P6SM FEW070",
+            ),
         ]);
         let found = station_weather(&state, "KEWR", Instant::now()).expect("KEWR");
         assert!(found.has_taf);
@@ -1155,7 +1207,11 @@ mod tests {
     #[test]
     fn a_line_with_no_category_names_the_product_instead_of_going_blank() {
         // No badge is drawn in this case, so without the word the line would start with a gap.
-        let line = line_for("METAR KAAA 021656Z 09005KT", Duration::from_secs(120), false);
+        let line = line_for(
+            "METAR KAAA 021656Z 09005KT",
+            Duration::from_secs(120),
+            false,
+        );
         assert!(line.starts_with("METAR"), "{line}");
         assert!(line.contains("090\u{00B0} 05"), "{line}");
     }
@@ -1200,7 +1256,11 @@ mod tests {
             "all four when there is room"
         );
         assert_eq!(fit_with(&all, 10.0, 210.0), "TWR 118.1  GND 121.7");
-        assert_eq!(fit_with(&all, 10.0, 100.0), "TWR 118.1", "tower survives longest");
+        assert_eq!(
+            fit_with(&all, 10.0, 100.0),
+            "TWR 118.1",
+            "tower survives longest"
+        );
     }
 
     #[test]
@@ -1230,7 +1290,10 @@ mod tests {
         );
         // And it really is the worst case: gusting, three-digit ceiling, fractional visibility,
         // an hours-old report and a TAF.
-        assert!(worst.contains('G') && worst.contains("TAF") && worst.contains('h'), "{worst}");
+        assert!(
+            worst.contains('G') && worst.contains("TAF") && worst.contains('h'),
+            "{worst}"
+        );
     }
 
     #[test]
@@ -1258,13 +1321,26 @@ mod tests {
         let over_teb = chart.airspace_at(LatLon::new(40.79, -74.10));
         assert!(over_teb.len() >= 2, "Teterboro sits under a Class B shelf");
 
-        let d = over_teb.iter().find(|a| a.class == chart::Class::D).expect("Class D");
+        let d = over_teb
+            .iter()
+            .find(|a| a.class == chart::Class::D)
+            .expect("Class D");
         assert!(d.lower_is_surface());
-        assert!(vertical_limits(d).starts_with("SFC - "), "{}", vertical_limits(d));
+        assert!(
+            vertical_limits(d).starts_with("SFC - "),
+            "{}",
+            vertical_limits(d)
+        );
 
-        let b = over_teb.iter().find(|a| a.class == chart::Class::B).expect("Class B shelf");
+        let b = over_teb
+            .iter()
+            .find(|a| a.class == chart::Class::B)
+            .expect("Class B shelf");
         assert!(!b.lower_is_surface());
-        assert_eq!(vertical_limits(b), format!("{} - {} ft", b.lower_ft, b.upper_ft));
+        assert_eq!(
+            vertical_limits(b),
+            format!("{} - {} ft", b.lower_ft, b.upper_ft)
+        );
 
         // Lowest floor first — the order you meet them climbing, and the reason the surface area
         // has to sort as 0 rather than by whatever `lower_ft` happens to contain.
@@ -1279,8 +1355,14 @@ mod tests {
         for (shown, row) in CARD_ROWS.iter().enumerate().skip(1) {
             let height = row + 10.0;
             let y0 = l.footer_y0() - l.margin - height;
-            assert!(y0 > l.strip_y0(), "{shown} rows starts above the status bar");
-            assert!(y0 + height < l.footer_y0(), "{shown} rows overlaps the footer");
+            assert!(
+                y0 > l.strip_y0(),
+                "{shown} rows starts above the status bar"
+            );
+            assert!(
+                y0 + height < l.footer_y0(),
+                "{shown} rows overlaps the footer"
+            );
             assert!(*row < height, "the last row is inside the card");
         }
     }
@@ -1291,13 +1373,22 @@ mod tests {
         let l = layout();
         let x0 = l.content_left();
         let y0 = l.footer_y0() - l.margin - CARD_H_WX;
-        assert!(y0 > l.strip_y0(), "the weather card starts above the status bar");
-        assert!(y0 + CARD_H_WX < l.footer_y0(), "the weather card overlaps the footer");
+        assert!(
+            y0 > l.strip_y0(),
+            "the weather card starts above the status bar"
+        );
+        assert!(
+            y0 + CARD_H_WX < l.footer_y0(),
+            "the weather card overlaps the footer"
+        );
         assert!(x0 + CARD_W <= l.content_x1);
         // Every row has somewhere to sit inside the card it belongs to.
         for (index, row) in CARD_ROWS.iter().enumerate() {
             let card = if index == 4 { CARD_H_WX } else { CARD_H };
-            assert!(*row < card, "row {index} at {row} is outside a card of {card}");
+            assert!(
+                *row < card,
+                "row {index} at {row} is outside a card of {card}"
+            );
             assert!(*row > 0.0, "row {index} is above the card");
         }
     }
@@ -1312,7 +1403,10 @@ mod tests {
         assert!(y0 > l.strip_y0(), "card starts above the status bar");
         assert!(y0 + CARD_H < l.footer_y0(), "card overlaps the footer bar");
         // And it leaves most of the plan view alone: own-ship is at the centre.
-        assert!(x0 + CARD_W < l.center.0 + l.content_width() * 0.5, "card covers the right half");
+        assert!(
+            x0 + CARD_W < l.center.0 + l.content_width() * 0.5,
+            "card covers the right half"
+        );
     }
 
     #[test]
@@ -1321,7 +1415,11 @@ mod tests {
         // it sits inside. A tick that cannot show an angle is only ink.
         for range in crate::ViewState::RANGES {
             let drawn = range <= TICK_RANGE_NM;
-            assert_eq!(drawn, range <= 20.0, "range {range} changed sides of the tick threshold");
+            assert_eq!(
+                drawn,
+                range <= 20.0,
+                "range {range} changed sides of the tick threshold"
+            );
         }
     }
 

@@ -124,7 +124,8 @@ fn decodes_a_full_traffic_report() {
         "BearingDist_valid": true, "Bearing": 96.2, "Distance": 38500.0
     }"#;
 
-    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap()
+    else {
         panic!("expected a traffic event");
     };
 
@@ -147,7 +148,8 @@ fn decodes_a_full_traffic_report() {
 #[test]
 fn traffic_falls_back_to_registration_when_no_callsign_is_transmitted() {
     let payload = r#"{"Icao_addr":1,"Reg":"N91TC","Tail":"   "}"#;
-    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap()
+    else {
         panic!();
     };
     assert_eq!(t.identity.as_deref(), Some("N91TC"));
@@ -158,16 +160,21 @@ fn null_island_positions_are_rejected() {
     // Stratux zero-initialises its structs, so a target with no position yet reports exactly
     // 0,0. Trusting that would draw a phantom target in the Gulf of Guinea.
     let payload = r#"{"Icao_addr":1,"Position_valid":true,"Lat":0.0,"Lng":0.0}"#;
-    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap()
+    else {
         panic!();
     };
-    assert!(t.position.is_none(), "0,0 must not be treated as a position");
+    assert!(
+        t.position.is_none(),
+        "0,0 must not be treated as a position"
+    );
 }
 
 #[test]
 fn position_is_ignored_unless_position_valid_is_set() {
     let payload = r#"{"Icao_addr":1,"Position_valid":false,"Lat":39.9,"Lng":-105.1}"#;
-    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap()
+    else {
         panic!();
     };
     assert!(t.position.is_none());
@@ -179,7 +186,8 @@ fn track_and_speed_are_withheld_without_a_velocity_solution() {
     // Stratux has no Track_valid flag; Speed_valid stands in for both. A stale track drawn as
     // a heading barb is worse than no barb.
     let payload = r#"{"Icao_addr":1,"Track":271.0,"Speed":284,"Speed_valid":false}"#;
-    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Traffic(t)) = decode(Stream::Traffic, payload.as_bytes(), now()).unwrap()
+    else {
         panic!();
     };
     assert!(t.track_deg.is_none());
@@ -259,7 +267,8 @@ fn pressure_altitude_is_preferred_for_comparison_when_a_sensor_exists() {
 fn decodes_a_text_weather_product() {
     let payload = r#"{"Type":"METAR","Location":"KDEN","Time":"291853Z",
                       "Data":"METAR KDEN 291853Z 04012KT 10SM FEW120 28/07 A3002"}"#;
-    let Some(Event::Weather(w)) = decode(Stream::Weather, payload.as_bytes(), now()).unwrap() else {
+    let Some(Event::Weather(w)) = decode(Stream::Weather, payload.as_bytes(), now()).unwrap()
+    else {
         panic!("expected a weather event");
     };
     assert_eq!(w.product.label(), "METAR");
@@ -340,14 +349,20 @@ fn conus_and_regional_disagree_on_what_empty_means() {
     assert_eq!(NexradKind::Conus.empty_intensity(), 1);
 
     let all_ones = vec![1u16; 128];
-    let Some(Event::Nexrad(regional)) =
-        decode(Stream::JsonIo, nexrad_payload(63, &all_ones).as_bytes(), now()).unwrap()
-    else {
+    let Some(Event::Nexrad(regional)) = decode(
+        Stream::JsonIo,
+        nexrad_payload(63, &all_ones).as_bytes(),
+        now(),
+    )
+    .unwrap() else {
         panic!();
     };
-    let Some(Event::Nexrad(conus)) =
-        decode(Stream::JsonIo, nexrad_payload(64, &all_ones).as_bytes(), now()).unwrap()
-    else {
+    let Some(Event::Nexrad(conus)) = decode(
+        Stream::JsonIo,
+        nexrad_payload(64, &all_ones).as_bytes(),
+        now(),
+    )
+    .unwrap() else {
         panic!();
     };
 
@@ -461,7 +476,10 @@ fn situation_json(status: u8, pitch: f64, roll: f64) -> String {
 
 fn decode_ownship(json: &str) -> stratux_client::domain::OwnShip {
     let now = Instant::now();
-    match decode(Stream::Situation, json.as_bytes(), now).unwrap().unwrap() {
+    match decode(Stream::Situation, json.as_bytes(), now)
+        .unwrap()
+        .unwrap()
+    {
         Event::OwnShip(o) => o,
         other => panic!("expected OwnShip, got {other:?}"),
     }
@@ -489,7 +507,10 @@ fn a_status_of_zero_blanks_every_field_not_just_the_attitude() {
     assert_eq!(a.attitude(), None);
     assert_eq!(a.pitch_deg, None);
     assert_eq!(a.roll_deg, None);
-    assert_eq!(a.slip_skid_deg, None, "the slip ball must not be drawn either");
+    assert_eq!(
+        a.slip_skid_deg, None,
+        "the slip ball must not be drawn either"
+    );
     assert_eq!(a.g_load, None);
     assert_eq!(a.status, 0);
 }
@@ -515,6 +536,13 @@ fn pressure_altitude_is_used_when_a_baro_sensor_is_present() {
         r#"{"GPSFixQuality":2,"GPSLatitude":40.0,"GPSLongitude":-105.0,
             "GPSAltitudeMSL":5000.0,"BaroSourceType":0,"BaroPressureAltitude":4800.0}"#,
     );
-    assert_eq!(without.pressure_altitude_ft, None, "no sensor means no reading");
-    assert_eq!(without.comparison_altitude_ft(), Some(5000.0), "falls back to GPS MSL");
+    assert_eq!(
+        without.pressure_altitude_ft, None,
+        "no sensor means no reading"
+    );
+    assert_eq!(
+        without.comparison_altitude_ft(),
+        Some(5000.0),
+        "falls back to GPS MSL"
+    );
 }

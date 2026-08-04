@@ -94,7 +94,9 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "--frames" => {
                 let v = argv.next().context("--frames needs a number")?;
-                args.frames = v.parse().with_context(|| format!("bad --frames value {v:?}"))?;
+                args.frames = v
+                    .parse()
+                    .with_context(|| format!("bad --frames value {v:?}"))?;
                 frames_set = true;
             }
             "--size" => {
@@ -124,7 +126,11 @@ fn install_signal_handlers() -> Result<()> {
         SHUTDOWN.store(true, Ordering::SeqCst);
     }
 
-    let action = SigAction::new(SigHandler::Handler(handler), SaFlags::empty(), SigSet::empty());
+    let action = SigAction::new(
+        SigHandler::Handler(handler),
+        SaFlags::empty(),
+        SigSet::empty(),
+    );
     // SAFETY: the handler does nothing but an atomic store.
     unsafe {
         sigaction(Signal::SIGINT, &action).context("installing SIGINT handler")?;

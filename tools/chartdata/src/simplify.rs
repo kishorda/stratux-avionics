@@ -275,7 +275,11 @@ mod tests {
         points.push((-74.0, 40.0));
 
         let simple = ring(&points, TOLERANCE_M);
-        assert!(simple.len() < 10, "ripple survived: {} points", simple.len());
+        assert!(
+            simple.len() < 10,
+            "ripple survived: {} points",
+            simple.len()
+        );
         assert!(
             simple.iter().any(|p| p.1 > 40.004),
             "the notch was simplified away"

@@ -236,7 +236,11 @@ fn to_traffic(a: &Aircraft) -> wire::TrafficInfo {
         SignalLevel: a.rssi.unwrap_or(-30.0),
         // Reads as decimal digits that happen to spell an octal code, which is how Stratux holds
         // it too, so this is a plain decimal parse and not a base conversion.
-        Squawk: a.squawk.as_deref().and_then(|s| s.trim().parse().ok()).unwrap_or(0),
+        Squawk: a
+            .squawk
+            .as_deref()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0),
         Position_valid: a.lat.is_some() && a.lon.is_some(),
         Lat: a.lat.unwrap_or(0.0) as f32,
         Lng: a.lon.unwrap_or(0.0) as f32,
@@ -270,7 +274,10 @@ mod tests {
         assert!(!on_ground);
 
         assert_eq!(parse_altitude(None), (None, false));
-        assert_eq!(parse_altitude(Some(&serde_json::json!(null))), (None, false));
+        assert_eq!(
+            parse_altitude(Some(&serde_json::json!(null))),
+            (None, false)
+        );
     }
 
     #[test]
@@ -400,8 +407,7 @@ mod tests {
     fn a_snapshot_with_nothing_in_it_is_not_an_error() {
         // An empty sky at 3am is a legitimate snapshot, and the display's own "quiet sky" handling
         // is one of the things worth testing against it.
-        let snap =
-            Snapshot::parse(br#"{"origin":{"lat":0.0,"lon":0.0}}"#).expect("parses");
+        let snap = Snapshot::parse(br#"{"origin":{"lat":0.0,"lon":0.0}}"#).expect("parses");
         assert!(snap.targets().is_empty());
         assert!(snap.weather().is_empty());
     }

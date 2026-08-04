@@ -123,7 +123,15 @@ pub fn draw(
     } else {
         theme.text_primary
     };
-    cursor = field(ui, canvas, cursor, baseline, "TFC", &traffic, traffic_colour);
+    cursor = field(
+        ui,
+        canvas,
+        cursor,
+        baseline,
+        "TFC",
+        &traffic,
+        traffic_colour,
+    );
 
     // --- CPU temperature ---
     // The Pi 3 throttles at 80 C and two SDRs in an enclosure run hot; throttling shows up as a

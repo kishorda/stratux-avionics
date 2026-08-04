@@ -186,8 +186,11 @@ pub async fn serve(world: World, config: Config) -> Result<()> {
     }
     if let Some(feeds) = config.feeds {
         tracing::info!(
-            lat = feeds.lat, lon = feeds.lon, radius_nm = feeds.radius_nm,
-            traffic_s = feeds.traffic_every.as_secs(), weather_s = feeds.weather_every.as_secs(),
+            lat = feeds.lat,
+            lon = feeds.lon,
+            radius_nm = feeds.radius_nm,
+            traffic_s = feeds.traffic_every.as_secs(),
+            weather_s = feeds.weather_every.as_secs(),
             "internet mode: polling adsb.lol and aviationweather.gov"
         );
         tokio::spawn(poll_feeds(Arc::clone(&world), feeds));
@@ -446,7 +449,10 @@ mod tests {
         world.lock().await.tick(Duration::from_secs(60));
 
         let moved = poll_centre(&world, &base).await;
-        assert_eq!(moved.lat, base.lat, "a due-east track must not change latitude");
+        assert_eq!(
+            moved.lat, base.lat,
+            "a due-east track must not change latitude"
+        );
         assert!(
             moved.lon > base.lon + 0.1,
             "the query should have moved east with the aircraft: {} vs {}",

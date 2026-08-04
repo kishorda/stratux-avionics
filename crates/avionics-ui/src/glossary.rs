@@ -56,14 +56,20 @@ static ENTRIES: &[(&str, &str)] = &[
     // ASCII order puts the symbols first: $ + - / all sort below the letters.
     ("+", "heavy intensity"),
     ("-", "light intensity"),
-    ("/", "visual range follows; also separates temperature and dew point"),
-    ("A", "altimeter setting, inches of mercury"),  // page 4
+    (
+        "/",
+        "visual range follows; also separates temperature and dew point",
+    ),
+    ("A", "altimeter setting, inches of mercury"), // page 4
     ("ACC", "altocumulus castellanus"),
     ("ACFT", "aircraft"),
     ("ACSL", "altocumulus standing lenticular cloud"),
     ("ALP", "airport location point"),
-    ("AMD", "amended forecast"),  // TAF
-    ("AO1", "automated station without precipitation discriminator"),
+    ("AMD", "amended forecast"), // TAF
+    (
+        "AO1",
+        "automated station without precipitation discriminator",
+    ),
     ("AO2", "automated station with precipitation discriminator"),
     ("APCH", "approach"),
     ("APRNT", "apparent"),
@@ -72,7 +78,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("AUTO", "fully automated report"),
     ("B", "began"),
     ("BC", "patches"),
-    ("BECMG", "becoming — gradual change over the period"),  // TAF
+    ("BECMG", "becoming — gradual change over the period"), // TAF
     ("BKN", "broken"),
     ("BL", "blowing"),
     ("BR", "mist"),
@@ -87,7 +93,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("CHINO", "sky condition at secondary location not available"),
     ("CIG", "ceiling"),
     ("CLR", "clear"),
-    ("CNL", "cancelled"),  // TAF
+    ("CNL", "cancelled"), // TAF
     ("CONS", "continuous"),
     ("COR", "correction to a previously disseminated observation"),
     ("DR", "low drifting"),
@@ -103,7 +109,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("FG", "fog"),
     ("FIBI", "filed but impracticable to transmit"),
     ("FIRST", "first observation after a break in coverage"),
-    ("FM", "from — rapid change beginning at this time"),  // TAF
+    ("FM", "from — rapid change beginning at this time"), // TAF
     ("FROPA", "frontal passage"),
     ("FRQ", "frequent"),
     ("FT", "feet"),
@@ -131,10 +137,10 @@ static ENTRIES: &[(&str, &str)] = &[
     ("MT", "mountains"),
     ("N", "north"),
     ("NE", "northeast"),
-    ("NIL", "none, or no report available"),  // TAF
+    ("NIL", "none, or no report available"), // TAF
     ("NOSPECI", "no SPECI reports are taken at the station"),
     ("NOTAM", "Notice to Airmen"),
-    ("NSW", "no significant weather"),  // TAF
+    ("NSW", "no significant weather"), // TAF
     ("NW", "northwest"),
     ("OCNL", "occasional"),
     ("OHD", "overhead"),
@@ -149,12 +155,12 @@ static ENTRIES: &[(&str, &str)] = &[
     ("PRES", "pressure"),
     ("PRESFR", "pressure falling rapidly"),
     ("PRESRR", "pressure rising rapidly"),
-    ("PROB", "probability of occurrence, per cent"),  // TAF
+    ("PROB", "probability of occurrence, per cent"), // TAF
     ("PWINO", "precipitation identifier sensor not available"),
     ("PY", "spray"),
     ("R", "right (runway designation), runway"),
     ("RA", "rain"),
-    ("RMK", "remarks follow"),  // page 4
+    ("RMK", "remarks follow"), // page 4
     ("RTD", "routine delayed (late) observation"),
     ("RV", "reportable value"),
     ("RVR", "runway visual range"),
@@ -180,10 +186,13 @@ static ENTRIES: &[(&str, &str)] = &[
     ("SS", "sandstorm"),
     ("STN", "station"),
     ("SW", "snow shower, southwest"),
-    ("T", "hourly temperature and dew point, tenths of a degree Celsius"),  // page 4
-    ("TAF", "terminal aerodrome forecast"),  // TAF
+    (
+        "T",
+        "hourly temperature and dew point, tenths of a degree Celsius",
+    ), // page 4
+    ("TAF", "terminal aerodrome forecast"), // TAF
     ("TCU", "towering cumulus"),
-    ("TEMPO", "temporary fluctuations, under one hour each"),  // TAF
+    ("TEMPO", "temporary fluctuations, under one hour each"), // TAF
     ("TS", "thunderstorm"),
     ("TSNO", "thunderstorm information not available"),
     ("TWR", "tower"),
@@ -200,7 +209,7 @@ static ENTRIES: &[(&str, &str)] = &[
     ("VV", "vertical visibility"),
     ("W", "west"),
     ("WND", "wind"),
-    ("WS", "wind shear"),  // TAF
+    ("WS", "wind shear"), // TAF
     ("WSHFT", "wind shift"),
     ("Z", "zulu (Coordinated Universal Time)"),
 ];
@@ -524,15 +533,23 @@ mod tests {
         // The trap this whole module has to get right: TSNO contains "TS" but means the
         // thunderstorm sensor is unavailable. It must resolve to itself and nothing else.
         assert_eq!(codes_in("TSNO"), vec!["TSNO"]);
-        assert_eq!(lookup("TSNO"), Some("thunderstorm information not available"));
+        assert_eq!(
+            lookup("TSNO"),
+            Some("thunderstorm information not available")
+        );
     }
 
     #[test]
     fn single_letters_are_not_matched_as_whole_tokens() {
         // M, P, R, S, N, E and V are real entries but standing alone they are almost always part
         // of something else. Defining a stray letter would be confident noise.
-        for token in ["M", "P", "R", "S", "N", "E", "V", "G", "B", "L", "W", "Z", "C"] {
-            assert!(codes_in(token).is_empty(), "{token} should not resolve alone");
+        for token in [
+            "M", "P", "R", "S", "N", "E", "V", "G", "B", "L", "W", "Z", "C",
+        ] {
+            assert!(
+                codes_in(token).is_empty(),
+                "{token} should not resolve alone"
+            );
         }
     }
 
@@ -646,7 +663,10 @@ mod tests {
 
     #[test]
     fn a_code_appearing_twice_is_listed_once() {
-        let codes: Vec<&str> = explain("SCT010 SCT020 BKN030").into_iter().map(|(c, _)| c).collect();
+        let codes: Vec<&str> = explain("SCT010 SCT020 BKN030")
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
         assert_eq!(codes, vec!["SCT", "BKN"]);
     }
 

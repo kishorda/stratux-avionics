@@ -46,8 +46,8 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn create(path: &Path) -> Result<Self> {
-        let file = File::create(path)
-            .with_context(|| format!("creating recording {}", path.display()))?;
+        let file =
+            File::create(path).with_context(|| format!("creating recording {}", path.display()))?;
         Ok(Self {
             writer: BufWriter::new(file),
             frames_written: 0,
@@ -91,7 +91,8 @@ pub fn read_all(path: &Path) -> Result<Vec<Frame>> {
     let mut skipped = 0usize;
 
     for (index, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("reading {} line {}", path.display(), index + 1))?;
+        let line =
+            line.with_context(|| format!("reading {} line {}", path.display(), index + 1))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -149,7 +150,11 @@ impl Default for ReplayConfig {
 /// Replay frames into a [`SourceEvent`] channel, reproducing the recorded timing.
 pub fn spawn(frames: Vec<Frame>, config: ReplayConfig) -> mpsc::Receiver<SourceEvent> {
     let (tx, rx) = mpsc::channel(config.channel_capacity);
-    let speed = if config.speed > 0.0 { config.speed } else { 1.0 };
+    let speed = if config.speed > 0.0 {
+        config.speed
+    } else {
+        1.0
+    };
 
     tokio::spawn(async move {
         // Announce the streams present in the recording so consumers see the same connection

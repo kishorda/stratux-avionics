@@ -174,7 +174,10 @@ mod tests {
         let mut expected_y = l.strip_y0();
         for slot in 0..Page::ALL.len() {
             let (_, y, _, h) = slot_rect(&l, slot);
-            assert!((y - expected_y).abs() < 0.001, "slot {slot} starts at a gap");
+            assert!(
+                (y - expected_y).abs() < 0.001,
+                "slot {slot} starts at a gap"
+            );
             expected_y += h;
         }
         assert!((expected_y - l.strip_y1()).abs() < 0.001);
@@ -186,8 +189,14 @@ mod tests {
         let l = layout();
         let (_, _, _, page_h) = slot_rect(&l, 0);
         let (_, _, _, fn_h) = crate::softkeys::slot_rect(&l, 0);
-        assert!(page_h >= fn_h, "page keys {page_h} shorter than function keys {fn_h}");
-        assert!(page_h >= 60.0, "page keys too short to hit reliably: {page_h}");
+        assert!(
+            page_h >= fn_h,
+            "page keys {page_h} shorter than function keys {fn_h}"
+        );
+        assert!(
+            page_h >= 60.0,
+            "page keys too short to hit reliably: {page_h}"
+        );
     }
 
     #[test]

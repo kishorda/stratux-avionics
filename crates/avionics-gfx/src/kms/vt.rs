@@ -47,7 +47,10 @@ impl Vt {
             .with_context(|| format!("KDSETMODE(KD_GRAPHICS) on {}", path.display()))?;
 
         tracing::debug!(path = %path.display(), "console switched to graphics mode");
-        Ok(Self { file, restored: false })
+        Ok(Self {
+            file,
+            restored: false,
+        })
     }
 
     /// Put the console back into text mode. Idempotent.

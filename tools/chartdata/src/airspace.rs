@@ -63,8 +63,8 @@ pub fn parse(pages: &[String]) -> Result<(Vec<Airspace>, Stats)> {
     let mut stats = Stats::new();
 
     for (index, page) in pages.iter().enumerate() {
-        let value: Value = serde_json::from_str(page)
-            .with_context(|| format!("parsing airspace page {index}"))?;
+        let value: Value =
+            serde_json::from_str(page).with_context(|| format!("parsing airspace page {index}"))?;
         let features = value
             .get("features")
             .and_then(Value::as_array)
@@ -316,7 +316,10 @@ mod tests {
         ])];
         let (out, stats) = parse(&pages).unwrap();
         let labels: Vec<&str> = out.iter().map(|a| a.label.as_str()).collect();
-        assert!(!labels.contains(&"WABB"), "Biak should not be in a CONUS file");
+        assert!(
+            !labels.contains(&"WABB"),
+            "Biak should not be in a CONUS file"
+        );
         assert!(labels.contains(&"CYVR"), "Vancouver is next door");
         assert!(labels.contains(&"KEWR"));
         assert_eq!(stats.dropped_outside_box, 1);
@@ -367,8 +370,20 @@ mod tests {
         // Not in the current data — it is all Polygon — but an airspace split by an exclusion is
         // naturally a MultiPolygon, and losing half a boundary would not look like a fault.
         let coords = serde_json::json!([
-            [[[-74.0, 40.0], [-73.9, 40.0], [-73.9, 40.1], [-74.0, 40.1], [-74.0, 40.0]]],
-            [[[-73.5, 40.0], [-73.4, 40.0], [-73.4, 40.1], [-73.5, 40.1], [-73.5, 40.0]]]
+            [[
+                [-74.0, 40.0],
+                [-73.9, 40.0],
+                [-73.9, 40.1],
+                [-74.0, 40.1],
+                [-74.0, 40.0]
+            ]],
+            [[
+                [-73.5, 40.0],
+                [-73.4, 40.0],
+                [-73.4, 40.1],
+                [-73.5, 40.1],
+                [-73.5, 40.0]
+            ]]
         ]);
         let f = serde_json::json!({
             "type": "Feature",
@@ -387,7 +402,10 @@ mod tests {
             .map(|i| {
                 let a = (i as f64 / 3000.0) * std::f64::consts::TAU;
                 let cos_lat = 40.8f64.to_radians().cos();
-                (-74.4 + 4.4 * a.sin() / (60.0 * cos_lat), 40.8 + 4.4 * a.cos() / 60.0)
+                (
+                    -74.4 + 4.4 * a.sin() / (60.0 * cos_lat),
+                    40.8 + 4.4 * a.cos() / 60.0,
+                )
             })
             .collect();
         ring.push(ring[0]);
@@ -422,10 +440,18 @@ mod tests {
         let b = feature("B", "KEWR", &square(-74.3, 40.6, 0.3), Value::Null);
         let c = feature("C", "KTEB", &square(-74.1, 40.8, 0.2), Value::Null);
 
-        let forward = parse(&[page(vec![a.clone(), b.clone(), c.clone()])]).unwrap().0;
-        let backward = parse(&[page(vec![c]), page(vec![b]), page(vec![a])]).unwrap().0;
+        let forward = parse(&[page(vec![a.clone(), b.clone(), c.clone()])])
+            .unwrap()
+            .0;
+        let backward = parse(&[page(vec![c]), page(vec![b]), page(vec![a])])
+            .unwrap()
+            .0;
         let labels = |v: &[Airspace]| v.iter().map(|s| s.label.clone()).collect::<Vec<_>>();
         assert_eq!(labels(&forward), labels(&backward));
-        assert_eq!(labels(&forward), vec!["KEWR", "KTEB", "KMMU"], "B, then C, then D");
+        assert_eq!(
+            labels(&forward),
+            vec!["KEWR", "KTEB", "KMMU"],
+            "B, then C, then D"
+        );
     }
 }

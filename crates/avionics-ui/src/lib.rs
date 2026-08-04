@@ -151,7 +151,9 @@ pub enum CageState {
     Requested,
     InFlight,
     /// Finished, showing the outcome briefly before returning to idle.
-    Done { ok: bool },
+    Done {
+        ok: bool,
+    },
 }
 
 /// How much of the map layer is drawn.

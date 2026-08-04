@@ -60,7 +60,10 @@ fn north_up_puts_north_at_the_top_and_east_to_the_right() {
     let p = Projection::new(ORIGIN, CENTER, PX_PER_NM, Orientation::NorthUp, Some(43.0));
 
     let (nx, ny) = p.project(at_bearing(0.0, 5.0));
-    assert!((nx - CENTER.0).abs() < 1.0, "due north should be directly above");
+    assert!(
+        (nx - CENTER.0).abs() < 1.0,
+        "due north should be directly above"
+    );
     assert!(ny < CENTER.1 - 40.0, "due north should be above centre");
 
     let (ex, ey) = p.project(at_bearing(90.0, 5.0));
@@ -77,7 +80,10 @@ fn track_up_puts_whatever_is_ahead_at_the_top() {
     let p = Projection::new(ORIGIN, CENTER, PX_PER_NM, Orientation::TrackUp, Some(43.0));
     let (x, y) = p.project(at_bearing(43.0, 5.0));
 
-    assert!((x - CENTER.0).abs() < 1.5, "target ahead should be directly above, x={x}");
+    assert!(
+        (x - CENTER.0).abs() < 1.5,
+        "target ahead should be directly above, x={x}"
+    );
     assert!(y < CENTER.1 - 40.0, "target ahead should be above centre");
 
     // And something behind must appear below.
@@ -189,7 +195,10 @@ fn extrapolation_is_capped_and_the_target_marked_coasting() {
         "extrapolation should stop at the cap, got {}",
         result.extrapolated_s
     );
-    assert!(result.coasting, "hitting the cap must mark the target coasting");
+    assert!(
+        result.coasting,
+        "hitting the cap must mark the target coasting"
+    );
 }
 
 #[test]
@@ -251,7 +260,10 @@ fn own_ship_is_extrapolated_the_same_way_as_traffic() {
     // Capped at max_extrapolation, so 3 s at 120 kt = 0.1 nm, not 30 s worth.
     let travelled_nm = (moved.lat - ORIGIN.lat) * 60.0;
     let expected = 120.0 * config.max_extrapolation.as_secs_f64() / 3600.0;
-    assert!((travelled_nm - expected).abs() < 1e-6, "moved {travelled_nm} nm");
+    assert!(
+        (travelled_nm - expected).abs() < 1e-6,
+        "moved {travelled_nm} nm"
+    );
 
     // With no track or speed it must not move at all.
     let still = reckon_ownship(ORIGIN, None, None, Some(received), received, &config);
@@ -278,7 +290,10 @@ fn tiers_require_being_inside_both_range_and_altitude() {
 
     // Close but well above: not an alert.
     t.altitude_ft = Some(8000 + 5000);
-    assert_eq!(assess(&t, 1.0, Some(8000.0), &config).level, ThreatLevel::Normal);
+    assert_eq!(
+        assess(&t, 1.0, Some(8000.0), &config).level,
+        ThreatLevel::Normal
+    );
 
     // Co-altitude but far away: not an alert.
     t.altitude_ft = Some(8000);
@@ -318,7 +333,10 @@ fn targets_on_the_ground_do_not_raise_alerts() {
     t.on_ground = true;
     t.altitude_ft = Some(5400);
 
-    assert_eq!(assess(&t, 0.2, Some(5400.0), &config).level, ThreatLevel::Normal);
+    assert_eq!(
+        assess(&t, 0.2, Some(5400.0), &config).level,
+        ThreatLevel::Normal
+    );
 }
 
 #[test]
@@ -496,7 +514,14 @@ fn a_target_inside_both_culls_is_drawn() {
     let (projection, view) = view_with(AltitudeFilter::Normal);
     let (t, position) = out_there(8.0, 1000);
     assert!(matches!(
-        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::admit(
+            &t,
+            position,
+            &projection,
+            &view,
+            Some(5000.0),
+            &ThreatConfig::default()
+        ),
         planview::Admission::Draw(_)
     ));
 }
@@ -506,7 +531,14 @@ fn an_in_range_target_outside_the_band_is_culled_vertically() {
     let (projection, view) = view_with(AltitudeFilter::Normal);
     let (t, position) = out_there(8.0, 6000);
     assert_eq!(
-        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::admit(
+            &t,
+            position,
+            &projection,
+            &view,
+            Some(5000.0),
+            &ThreatConfig::default()
+        ),
         planview::Admission::OutsideAltitude
     );
 }
@@ -519,7 +551,14 @@ fn a_target_outside_both_culls_counts_only_as_out_of_range() {
     let (projection, view) = view_with(AltitudeFilter::Normal);
     let (t, position) = out_there(40.0, 6000);
     assert_eq!(
-        planview::admit(&t, position, &projection, &view, Some(5000.0), &ThreatConfig::default()),
+        planview::admit(
+            &t,
+            position,
+            &projection,
+            &view,
+            Some(5000.0),
+            &ThreatConfig::default()
+        ),
         planview::Admission::OutsideRange
     );
 }
@@ -626,7 +665,11 @@ fn an_unknown_range_recovers_to_a_valid_one() {
         ..Default::default()
     };
     view.cycle_range();
-    assert!(ViewState::RANGES.contains(&view.range_nm), "got {}", view.range_nm);
+    assert!(
+        ViewState::RANGES.contains(&view.range_nm),
+        "got {}",
+        view.range_nm
+    );
 }
 
 #[test]
@@ -702,7 +745,10 @@ fn a_coasting_target_still_counts_as_held() {
         "fixture is meant to be a coasting target"
     );
     let state = state_without_ownship(vec![coasting]);
-    assert_eq!(avionics_ui::planview::unplotted_count(&state, now, &config), 1);
+    assert_eq!(
+        avionics_ui::planview::unplotted_count(&state, now, &config),
+        1
+    );
 }
 
 #[test]

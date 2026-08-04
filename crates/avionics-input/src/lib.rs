@@ -165,8 +165,7 @@ impl TouchReader {
     }
 
     pub fn open_path(path: PathBuf, screen: (f32, f32)) -> Result<Self> {
-        let device =
-            Device::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        let device = Device::open(&path).with_context(|| format!("opening {}", path.display()))?;
         Self::from_device(device, path, screen)
     }
 
@@ -521,7 +520,10 @@ mod tests {
         match gestures[0] {
             Gesture::Tap { x, y } => {
                 assert!((x - 493.6).abs() < 1.0, "x was {x}, expected ~493");
-                assert!((y - 129.3).abs() < 1.0, "y was {y}, expected ~129 (was ~0 before)");
+                assert!(
+                    (y - 129.3).abs() < 1.0,
+                    "y was {y}, expected ~129 (was ~0 before)"
+                );
             }
             other => panic!("expected a tap, got {other:?}"),
         }
@@ -558,7 +560,10 @@ mod tests {
                 other => panic!("tap {i} produced {other:?}"),
             }
         }
-        assert!(ys[0] < ys[1] && ys[1] < ys[2], "taps did not track the finger: {ys:?}");
+        assert!(
+            ys[0] < ys[1] && ys[1] < ys[2],
+            "taps did not track the finger: {ys:?}"
+        );
         assert!((ys[0] - 40.0).abs() < 1.5, "first tap y was {}", ys[0]);
         assert!((ys[2] - 440.0).abs() < 1.5, "third tap y was {}", ys[2]);
     }
@@ -569,7 +574,11 @@ mod tests {
         // corner. It must still produce a tap.
         let mut s = state();
         let gestures = replay(&mut s, &tap_events(7, 0, 0));
-        assert_eq!(gestures.len(), 1, "the top-left corner is a valid place to press");
+        assert_eq!(
+            gestures.len(),
+            1,
+            "the top-left corner is a valid place to press"
+        );
         assert!(matches!(gestures[0], Gesture::Tap { .. }));
     }
 
@@ -643,6 +652,9 @@ mod tests {
         // Released well after the tap window.
         let late = start + TAP_MAX_DURATION + Duration::from_millis(100);
         s.apply(TouchEvent::TrackingId(-1), late, &mut gestures);
-        assert!(gestures.is_empty(), "a resting hand must not fire a control");
+        assert!(
+            gestures.is_empty(),
+            "a resting hand must not fire a control"
+        );
     }
 }

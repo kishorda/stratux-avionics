@@ -138,7 +138,12 @@ impl OffscreenPresenter {
         canvas.set_size(w, h, 1.0);
 
         let target = canvas
-            .create_image_empty(w as usize, h as usize, PixelFormat::Rgba8, ImageFlags::empty())
+            .create_image_empty(
+                w as usize,
+                h as usize,
+                PixelFormat::Rgba8,
+                ImageFlags::empty(),
+            )
             .map_err(|e| anyhow!("creating offscreen render target: {e}"))?;
         bind_target(&mut canvas, target);
 

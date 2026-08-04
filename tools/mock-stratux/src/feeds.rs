@@ -58,7 +58,11 @@ impl Feeds {
     /// actually is. So it happens every poll rather than past some threshold that would be one
     /// more thing to tune and to get wrong.
     pub fn recentred(&self, lat: f64, lon: f64) -> Self {
-        Self { lat, lon, ..self.clone() }
+        Self {
+            lat,
+            lon,
+            ..self.clone()
+        }
     }
 
     /// A bounding box `radius_nm` around the centre, as aviationweather.gov wants it.
@@ -106,7 +110,10 @@ async fn get_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Val
     let status = response.status();
     let body = response.text().await.context("reading the body")?;
     if !status.is_success() {
-        anyhow::bail!("HTTP {status}: {}", body.chars().take(200).collect::<String>());
+        anyhow::bail!(
+            "HTTP {status}: {}",
+            body.chars().take(200).collect::<String>()
+        );
     }
     serde_json::from_str(&body).context("response was not JSON")
 }
@@ -192,7 +199,10 @@ mod tests {
         let parts: Vec<f64> = f.bbox().split(',').map(|s| s.parse().unwrap()).collect();
         let (lat0, lon0, lat1, lon1) = (parts[0], parts[1], parts[2], parts[3]);
 
-        assert!((lat1 - lat0 - 2.0 * 50.0 / 60.0).abs() < 1e-3, "latitude span");
+        assert!(
+            (lat1 - lat0 - 2.0 * 50.0 / 60.0).abs() < 1e-3,
+            "latitude span"
+        );
         let lon_span = lon1 - lon0;
         let lat_span = lat1 - lat0;
         assert!(
@@ -211,9 +221,9 @@ mod tests {
             f.traffic_url(),
             "https://api.adsb.lol/v2/lat/40.7784/lon/-74.3343/dist/50"
         );
-        assert!(f.weather_url("metar").starts_with(
-            "https://aviationweather.gov/api/data/metar?bbox="
-        ));
+        assert!(f
+            .weather_url("metar")
+            .starts_with("https://aviationweather.gov/api/data/metar?bbox="));
         assert!(f.weather_url("taf").ends_with("&format=json"));
     }
 
@@ -250,7 +260,10 @@ mod tests {
         // particular return `{"status":"error",...}` for a quiet area, which is routine.
         let error = serde_json::json!({"status": "error", "error": "no data"});
         assert_eq!(array_or_empty(error), serde_json::json!([]));
-        assert_eq!(array_or_empty(serde_json::Value::Null), serde_json::json!([]));
+        assert_eq!(
+            array_or_empty(serde_json::Value::Null),
+            serde_json::json!([])
+        );
         let ok = serde_json::json!([{"icaoId": "KMMU"}]);
         assert_eq!(array_or_empty(ok.clone()), ok);
     }

@@ -156,7 +156,8 @@ impl DesktopPresenter {
         if config.vsync {
             // Best effort: a driver that refuses vsync is not a reason to fail, it just means the
             // harness runs unthrottled.
-            if let Err(e) = surface.set_swap_interval(&context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()))
+            if let Err(e) =
+                surface.set_swap_interval(&context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()))
             {
                 tracing::warn!(error = %e, "could not enable vsync");
             }
@@ -180,10 +181,9 @@ impl DesktopPresenter {
             );
         }
 
-        let renderer = unsafe {
-            OpenGl::new_from_function_cstr(|name| gl_display.get_proc_address(name))
-        }
-        .map_err(|e| anyhow!("initialising the femtovg OpenGl renderer: {e}"))?;
+        let renderer =
+            unsafe { OpenGl::new_from_function_cstr(|name| gl_display.get_proc_address(name)) }
+                .map_err(|e| anyhow!("initialising the femtovg OpenGl renderer: {e}"))?;
 
         let mut canvas =
             Canvas::new(renderer).map_err(|e| anyhow!("creating the femtovg canvas: {e}"))?;
@@ -266,16 +266,18 @@ impl ApplicationHandler for Harness<'_> {
             WindowEvent::CursorMoved { position, .. } => {
                 *self.cursor = (position.x as f32, position.y as f32);
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                match button {
-                    MouseButton::Left => self.pending.push(DesktopInput::Click {
-                        x: self.cursor.0,
-                        y: self.cursor.1,
-                    }),
-                    MouseButton::Right => self.pending.push(DesktopInput::SecondaryClick),
-                    _ => {}
-                }
-            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => match button {
+                MouseButton::Left => self.pending.push(DesktopInput::Click {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                }),
+                MouseButton::Right => self.pending.push(DesktopInput::SecondaryClick),
+                _ => {}
+            },
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.logical_key {
                     Key::Named(NamedKey::Escape) => *self.exit = true,

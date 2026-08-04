@@ -12,8 +12,8 @@ use crate::reckon::{reckon, reckon_ownship, Reckoned};
 use crate::symbols;
 use crate::theme::faded;
 use crate::threat::{assess, format_relative_altitude, Assessment, ThreatLevel};
-use stratux_client::domain::LatLon;
 use crate::{FrameStats, Layout, Ui, ViewState};
+use stratux_client::domain::LatLon;
 
 /// One target resolved to screen coordinates, ready to draw.
 struct Plotted<'a> {
@@ -207,9 +207,9 @@ fn draw_rings(
     let label_angle = {
         // Screen angles are clockwise from straight up, so x = sin, y = -cos.
         const CANDIDATES: [f32; 4] = [
-            -std::f32::consts::FRAC_PI_4, // upper left
-            std::f32::consts::FRAC_PI_4,  // upper right
-            std::f32::consts::FRAC_PI_4 * 3.0, // lower right
+            -std::f32::consts::FRAC_PI_4,       // upper left
+            std::f32::consts::FRAC_PI_4,        // upper right
+            std::f32::consts::FRAC_PI_4 * 3.0,  // lower right
             -std::f32::consts::FRAC_PI_4 * 3.0, // lower left
         ];
         match north_angle {
@@ -388,9 +388,18 @@ mod tests {
     fn the_compass_rose_labels_every_thirty_degrees() {
         // Letters on the cardinals, tens of degrees elsewhere — the heading-indicator convention.
         let expected = [
-            (0, "N"), (30, "3"), (60, "6"), (90, "E"),
-            (120, "12"), (150, "15"), (180, "S"), (210, "21"),
-            (240, "24"), (270, "W"), (300, "30"), (330, "33"),
+            (0, "N"),
+            (30, "3"),
+            (60, "6"),
+            (90, "E"),
+            (120, "12"),
+            (150, "15"),
+            (180, "S"),
+            (210, "21"),
+            (240, "24"),
+            (270, "W"),
+            (300, "30"),
+            (330, "33"),
         ];
         for (deg, want) in expected {
             assert_eq!(compass_label(deg), want, "{deg} degrees");
@@ -413,7 +422,10 @@ mod tests {
         for (a, b) in [(0.0, PI), (0.1, -0.1), (-2.9, 2.9), (0.0, TAU - 0.2)] {
             let forward = angular_distance(a, b);
             let backward = angular_distance(b, a);
-            assert!((forward - backward).abs() < 1e-5, "not symmetric for {a},{b}");
+            assert!(
+                (forward - backward).abs() < 1e-5,
+                "not symmetric for {a},{b}"
+            );
             assert!(
                 (0.0..=PI + 1e-5).contains(&forward),
                 "{forward} out of range for {a},{b}"
@@ -442,13 +454,7 @@ fn padded_rect(cx: f32, cy: f32, width: f32, height: f32) -> Rect {
     }
 }
 
-fn draw_ownship(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    layout: &Layout,
-    state: &AppState,
-    view: &ViewState,
-) {
+fn draw_ownship(ui: &Ui, canvas: &mut Canvas, layout: &Layout, state: &AppState, view: &ViewState) {
     let theme = &ui.theme;
     let (cx, cy) = layout.center;
 
@@ -570,10 +576,20 @@ fn draw_tags(
         let right = (x + gap, Align::Left);
         let left = (x - gap - width, Align::Right);
         let prefer_left = x > layout.content_x0 + layout.content_width() * 0.62;
-        let sides = if prefer_left { [left, right] } else { [right, left] };
+        let sides = if prefer_left {
+            [left, right]
+        } else {
+            [right, left]
+        };
 
         let mut placed = None;
-        'search: for dy in [0.0, line_height, -line_height, line_height * 2.2, -line_height * 2.2] {
+        'search: for dy in [
+            0.0,
+            line_height,
+            -line_height,
+            line_height * 2.2,
+            -line_height * 2.2,
+        ] {
             for (anchor_x, align) in sides {
                 let x0 = match align {
                     Align::Right => anchor_x,
@@ -683,7 +699,10 @@ fn draw_symbol(ui: &Ui, canvas: &mut Canvas, projection: &Projection, item: &Plo
         &Paint::color(theme.target_outline).with_line_width(theme.line_width * 2.2),
     );
     if symbols::is_stroke_only(shape) {
-        canvas.stroke_path(&symbol, &Paint::color(colour).with_line_width(theme.line_width));
+        canvas.stroke_path(
+            &symbol,
+            &Paint::color(colour).with_line_width(theme.line_width),
+        );
     } else {
         canvas.fill_path(&symbol, &Paint::color(colour));
     }

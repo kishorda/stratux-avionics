@@ -152,8 +152,7 @@ impl KmsPresenter {
             )
             .context("creating GBM scanout surface")?;
 
-        let egl = unsafe { Egl::load_required() }
-            .map_err(|e| anyhow!("loading libEGL: {e}"))?;
+        let egl = unsafe { Egl::load_required() }.map_err(|e| anyhow!("loading libEGL: {e}"))?;
 
         let egl_display = unsafe {
             egl.get_platform_display(
@@ -174,11 +173,7 @@ impl KmsPresenter {
 
         // vc4 on the Pi 3 is GLES 2.0 only, so ask for exactly that. Requesting 3.x here
         // would fail outright rather than silently downgrading.
-        let context_attribs = [
-            khronos_egl::CONTEXT_CLIENT_VERSION,
-            2,
-            khronos_egl::NONE,
-        ];
+        let context_attribs = [khronos_egl::CONTEXT_CLIENT_VERSION, 2, khronos_egl::NONE];
         let egl_context = egl
             .create_context(egl_display, egl_config, None, &context_attribs)
             .context("eglCreateContext (GLES 2)")?;
@@ -322,8 +317,8 @@ impl Presenter for KmsPresenter {
             .swap_buffers(self.egl_display, self.egl_surface)
             .context("eglSwapBuffers")?;
 
-        let mut bo = unsafe { self.surface.lock_front_buffer() }
-            .context("gbm_surface_lock_front_buffer")?;
+        let mut bo =
+            unsafe { self.surface.lock_front_buffer() }.context("gbm_surface_lock_front_buffer")?;
         let fb = self.framebuffer_for(&mut bo)?;
 
         if !self.modeset_done {

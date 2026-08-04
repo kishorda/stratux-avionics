@@ -146,7 +146,12 @@ pub fn label(key: SoftKey, view: &ViewState) -> &'static str {
 /// stopping it short of either strip would waste the one line that reports selected range.
 pub fn slot_rect(layout: &Layout, slot: usize) -> (f32, f32, f32, f32) {
     let h = layout.strip_height() / SLOTS as f32;
-    (0.0, layout.strip_y0() + h * slot as f32, layout.strip_width, h)
+    (
+        0.0,
+        layout.strip_y0() + h * slot as f32,
+        layout.strip_width,
+        h,
+    )
 }
 
 /// Which slot a point falls in, or `None` if it is outside the strip.
@@ -260,7 +265,8 @@ mod tests {
         for page in Page::ALL {
             for key in keys_for(page).into_iter().flatten() {
                 assert!(
-                    !matches!(key, SoftKey::ScrollUp | SoftKey::ScrollDown) || page == Page::Weather,
+                    !matches!(key, SoftKey::ScrollUp | SoftKey::ScrollDown)
+                        || page == Page::Weather,
                     "{key:?} does not belong on {page:?}"
                 );
             }
@@ -287,7 +293,11 @@ mod tests {
         assert_eq!(hit(&l, l.content_x0, mid), None, "content area");
         assert_eq!(hit(&l, l.content_x1 + 5.0, mid), None, "page strip");
         assert_eq!(hit(&l, l.width - 1.0, mid), None);
-        assert_eq!(hit(&l, l.content_x0 - 1.0, mid), Some(1), "inside the strip");
+        assert_eq!(
+            hit(&l, l.content_x0 - 1.0, mid),
+            Some(1),
+            "inside the strip"
+        );
     }
 
     #[test]
@@ -302,7 +312,11 @@ mod tests {
         assert_eq!(hit(&l, x, l.footer_y0()), None, "top of the footer bar");
         assert_eq!(hit(&l, x, l.height - 1.0), None, "footer bar");
 
-        assert_eq!(hit(&l, x, l.strip_y0()), Some(0), "first pixel below the bar is slot 0");
+        assert_eq!(
+            hit(&l, x, l.strip_y0()),
+            Some(0),
+            "first pixel below the bar is slot 0"
+        );
         assert_eq!(hit(&l, x, l.strip_y1() - 0.001), Some(SLOTS - 1));
     }
 
@@ -323,7 +337,10 @@ mod tests {
     #[test]
     fn the_bottom_edge_does_not_index_past_the_last_slot() {
         let l = layout();
-        assert_eq!(hit(&l, l.strip_width * 0.5, l.strip_y1() - 0.001), Some(SLOTS - 1));
+        assert_eq!(
+            hit(&l, l.strip_width * 0.5, l.strip_y1() - 0.001),
+            Some(SLOTS - 1)
+        );
     }
 
     #[test]
@@ -332,7 +349,10 @@ mod tests {
         let mut expected_y = l.strip_y0();
         for slot in 0..SLOTS {
             let (_, y, _, h) = slot_rect(&l, slot);
-            assert!((y - expected_y).abs() < 0.001, "slot {slot} starts at a gap");
+            assert!(
+                (y - expected_y).abs() < 0.001,
+                "slot {slot} starts at a gap"
+            );
             expected_y += h;
         }
         assert!((expected_y - l.strip_y1()).abs() < 0.001);
@@ -410,7 +430,10 @@ mod tests {
         // where pressing it would take you.
         let mut view = ViewState::default();
         for _ in 0..crate::MapLayers::ALL.len() {
-            assert_eq!(label(SoftKey::CycleMapLayers, &view), view.map_layers.label());
+            assert_eq!(
+                label(SoftKey::CycleMapLayers, &view),
+                view.map_layers.label()
+            );
             view.cycle_map_layers();
         }
         // ... and the cycle returns to where it started rather than stranding a state.

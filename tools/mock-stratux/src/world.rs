@@ -353,8 +353,14 @@ mod tests {
         // ground stations rebroadcast — and because `/weather` does not replay on connect, so a
         // list that drained would leave every later client with nothing at all.
         let items = vec![
-            wire::WeatherMessage { Type: "METAR".into(), ..Default::default() },
-            wire::WeatherMessage { Type: "TAF".into(), ..Default::default() },
+            wire::WeatherMessage {
+                Type: "METAR".into(),
+                ..Default::default()
+            },
+            wire::WeatherMessage {
+                Type: "TAF".into(),
+                ..Default::default()
+            },
         ];
         let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], items);
         assert_eq!(world.next_weather().map(|w| w.Type), Some("METAR".into()));
@@ -392,7 +398,10 @@ mod tests {
         let seen: Vec<String> = (0..4)
             .filter_map(|_| world.next_weather().map(|w| w.Data))
             .collect();
-        assert!(seen.contains(&"B".to_string()), "late arrival never broadcast: {seen:?}");
+        assert!(
+            seen.contains(&"B".to_string()),
+            "late arrival never broadcast: {seen:?}"
+        );
     }
 
     #[test]
@@ -414,7 +423,11 @@ mod tests {
     fn a_refresh_snaps_positions_back_to_the_feed() {
         // Between polls the target is flown forward on an estimate. The arriving fix is the truth
         // and must win, exactly as a real ADS-B update does for the display's own reckoner.
-        let mut world = World::new(OwnShip::stationary(40.0, -74.0), vec![target(0.0, 600)], vec![]);
+        let mut world = World::new(
+            OwnShip::stationary(40.0, -74.0),
+            vec![target(0.0, 600)],
+            vec![],
+        );
         world.tick(Duration::from_secs(30));
         assert!(world.targets[0].Lat > 40.0, "fixture should have moved");
 
@@ -435,8 +448,16 @@ mod tests {
         let mut world = World::new(OwnShip::stationary(0.0, 0.0), vec![], vec![]);
 
         assert_eq!(world.merge_weather(vec![metar("A"), metar("B")]), 2);
-        assert_eq!(world.merge_weather(vec![metar("A"), metar("B")]), 0, "re-poll adds nothing");
-        assert_eq!(world.merge_weather(vec![metar("B"), metar("C")]), 1, "only the new one");
+        assert_eq!(
+            world.merge_weather(vec![metar("A"), metar("B")]),
+            0,
+            "re-poll adds nothing"
+        );
+        assert_eq!(
+            world.merge_weather(vec![metar("B"), metar("C")]),
+            1,
+            "only the new one"
+        );
         assert_eq!(world.weather.len(), 3);
     }
 

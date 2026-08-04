@@ -199,7 +199,12 @@ mod projection_tests {
             (Orientation::TrackUp, None),
         ] {
             let p = probe(orientation, track);
-            for (x, y) in [(400.0, 240.0), (120.0, 90.0), (700.0, 430.0), (401.5, 239.5)] {
+            for (x, y) in [
+                (400.0, 240.0),
+                (120.0, 90.0),
+                (700.0, 430.0),
+                (401.5, 239.5),
+            ] {
                 let back = p.project(p.unproject(x, y));
                 assert!(
                     (back.0 - x).abs() < 0.01 && (back.1 - y).abs() < 0.01,
@@ -224,7 +229,13 @@ mod projection_tests {
         let p = probe(Orientation::NorthUp, None);
         let above = p.unproject(400.0, 240.0 - 18.75); // one nautical mile up the screen
         assert!(above.lat > p.origin().lat, "up the screen should be north");
-        assert!((above.lon - p.origin().lon).abs() < 1e-9, "and not east or west");
-        assert!(((above.lat - p.origin().lat) * 60.0 - 1.0).abs() < 1e-6, "one nm");
+        assert!(
+            (above.lon - p.origin().lon).abs() < 1e-9,
+            "and not east or west"
+        );
+        assert!(
+            ((above.lat - p.origin().lat) * 60.0 - 1.0).abs() < 1e-6,
+            "one nm"
+        );
     }
 }

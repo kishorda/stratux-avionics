@@ -90,10 +90,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut args = Args::default();
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
-        let mut value = || {
-            argv.next()
-                .with_context(|| format!("{arg} needs a value"))
-        };
+        let mut value = || argv.next().with_context(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -103,7 +100,9 @@ fn parse_args() -> Result<Option<Args>> {
             "--internet" => args.internet = true,
             "--radius" => args.radius_nm = value()?.parse().context("bad --radius")?,
             "--poll" => args.poll_s = value()?.parse().context("bad --poll")?,
-            "--weather-poll" => args.weather_poll_s = value()?.parse().context("bad --weather-poll")?,
+            "--weather-poll" => {
+                args.weather_poll_s = value()?.parse().context("bad --weather-poll")?
+            }
             "--port" => args.port = value()?.parse().context("bad --port")?,
             "--lat" => args.lat = Some(value()?.parse().context("bad --lat")?),
             "--lon" => args.lon = Some(value()?.parse().context("bad --lon")?),
@@ -148,8 +147,10 @@ fn parse_args() -> Result<Option<Args>> {
             bail!("--radius must be between 1 and 250 nm");
         }
         if args.poll_s < 1.0 {
-            bail!("--poll below 1 s is not polite to a free service, and the targets are flown \
-                   forward between polls anyway");
+            bail!(
+                "--poll below 1 s is not polite to a free service, and the targets are flown \
+                   forward between polls anyway"
+            );
         }
         if args.weather_poll_s < 60.0 {
             bail!("--weather-poll below 60 s is pointless: reports update far more slowly");
@@ -162,8 +163,7 @@ fn parse_args() -> Result<Option<Args>> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -176,8 +176,8 @@ async fn main() -> Result<()> {
         // a gap to apologise for: it is what a real Stratux looks like at power-on, and the
         // display's "waiting" states deserve to be seen.
         Some(path) => {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let bytes =
+                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             let snap = snapshot::Snapshot::parse(&bytes)?;
             let targets = snap.targets();
             let weather = snap.weather();

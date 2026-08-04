@@ -73,7 +73,10 @@ fn stale_targets_are_pruned_but_fresh_ones_survive() {
 
     state.prune(now, &policy);
     assert_eq!(state.targets.len(), 1);
-    assert!(state.targets.contains_key(&2), "the fresh target must remain");
+    assert!(
+        state.targets.contains_key(&2),
+        "the fresh target must remain"
+    );
 }
 
 #[test]
@@ -87,7 +90,11 @@ fn nexrad_blocks_expire_on_their_own_much_longer_timeout() {
     let past_traffic_timeout = now - policy.target_timeout - Duration::from_secs(1);
     state.apply_event(Event::Nexrad(vec![nexrad(past_traffic_timeout)]));
     state.prune(now, &policy);
-    assert_eq!(state.nexrad.len(), 1, "NEXRAD must outlive the traffic timeout");
+    assert_eq!(
+        state.nexrad.len(),
+        1,
+        "NEXRAD must outlive the traffic timeout"
+    );
 
     let mut state = AppState::new();
     state.apply_event(Event::Nexrad(vec![nexrad(
@@ -124,11 +131,15 @@ fn a_new_metar_replaces_the_previous_one_for_that_station() {
         "METAR KDEN 291853Z 04012KT",
         now,
     )));
-    assert_eq!(state.weather.len(), 1, "a station has one current observation");
-    assert!(state
-        .weather
-        .values()
-        .any(|w| w.body.contains("291853Z")), "the newer one must win");
+    assert_eq!(
+        state.weather.len(),
+        1,
+        "a station has one current observation"
+    );
+    assert!(
+        state.weather.values().any(|w| w.body.contains("291853Z")),
+        "the newer one must win"
+    );
 }
 
 #[test]
@@ -228,7 +239,10 @@ fn ever_had_position_distinguishes_no_fix_from_a_renamed_field() {
     assert!(!state.ever_had_position);
 
     state.apply_event(Event::OwnShip(OwnShip::default()));
-    assert!(!state.ever_had_position, "a default/no-fix situation proves nothing");
+    assert!(
+        !state.ever_had_position,
+        "a default/no-fix situation proves nothing"
+    );
 
     state.apply_event(Event::OwnShip(OwnShip {
         position: Some(stratux_client::domain::LatLon::new(39.9, -105.1)),
@@ -394,7 +408,10 @@ fn a_synthetic_session_decodes_into_a_usable_picture() {
     assert_eq!(state.targets.len(), config.target_count);
     assert!(state.ever_had_position);
     assert!(state.ownship.usable_position().is_some());
-    assert!(state.ownship.track_deg.is_some(), "synth own-ship is moving");
+    assert!(
+        state.ownship.track_deg.is_some(),
+        "synth own-ship is moving"
+    );
     assert!(!state.weather.is_empty(), "weather was requested");
     assert!(!state.nexrad.is_empty(), "NEXRAD was requested");
     assert!(
@@ -574,9 +591,12 @@ async fn replay_announces_the_streams_present_in_the_recording() {
     }
 
     connected.sort();
-    assert_eq!(connected, vec![Stream::Traffic, Stream::Situation]
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>());
+    assert_eq!(
+        connected,
+        vec![Stream::Traffic, Stream::Situation]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
 }

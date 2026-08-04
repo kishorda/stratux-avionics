@@ -136,7 +136,9 @@ fn parse_args() -> Result<Option<Command>> {
     let command = match verb.as_str() {
         "record" => Command::Record {
             out: path.context("record needs an output path")?,
-            host: flag("--host").cloned().unwrap_or_else(|| "127.0.0.1".into()),
+            host: flag("--host")
+                .cloned()
+                .unwrap_or_else(|| "127.0.0.1".into()),
             port: match flag("--port") {
                 Some(v) => v.parse().with_context(|| format!("bad --port {v:?}"))?,
                 None => 80,
@@ -281,7 +283,10 @@ fn do_synth(out: &Path, config: &synth::SynthConfig) -> Result<()> {
         if config.weather { "on" } else { "off" },
         out.display()
     );
-    println!("Seed {} — regenerating with the same seed gives byte-identical output.", config.seed);
+    println!(
+        "Seed {} — regenerating with the same seed gives byte-identical output.",
+        config.seed
+    );
     Ok(())
 }
 
@@ -292,10 +297,7 @@ fn do_stats(input: &Path) -> Result<()> {
     println!("{}", input.display());
     println!("  frames    : {}", summary.frames);
     println!("  duration  : {:.1} s", summary.duration.as_secs_f64());
-    println!(
-        "  payload   : {:.1} KiB",
-        summary.bytes as f64 / 1024.0
-    );
+    println!("  payload   : {:.1} KiB", summary.bytes as f64 / 1024.0);
     println!("  per stream:");
     for (stream, count) in &summary.per_stream {
         let rate = if summary.duration.as_secs_f64() > 0.0 {

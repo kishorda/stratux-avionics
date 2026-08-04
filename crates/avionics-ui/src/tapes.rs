@@ -64,7 +64,13 @@ impl Tape {
 }
 
 /// Draw a tape. `value` of `None` means no reading: the scale and box are omitted entirely.
-pub fn draw(ui: &Ui, canvas: &mut Canvas, tape: &Tape, value: Option<f64>, format: impl Fn(f64) -> String) {
+pub fn draw(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    tape: &Tape,
+    value: Option<f64>,
+    format: impl Fn(f64) -> String,
+) {
     let theme = &ui.theme;
     frame(canvas, tape, theme);
 
@@ -99,7 +105,10 @@ fn frame(canvas: &mut Canvas, tape: &Tape, theme: &Theme) {
     panel.rect(tape.x, tape.top, tape.width, tape.bottom - tape.top);
     // Translucent so the horizon stays readable behind the tape — the attitude is the primary
     // picture and the tapes are an overlay on it, not a wall beside it.
-    canvas.fill_path(&panel, &Paint::color(crate::theme::faded(theme.background, 0.55)));
+    canvas.fill_path(
+        &panel,
+        &Paint::color(crate::theme::faded(theme.background, 0.55)),
+    );
 
     // A rule down the edge nearest the attitude, so the tape reads as a distinct instrument.
     let edge_x = match tape.side {
@@ -161,7 +170,10 @@ fn scale(ui: &Ui, canvas: &mut Canvas, tape: &Tape, current: f64) {
         majors.line_to(tick_to, y);
         let _ = canvas.fill_text(label_x, y, format_major(v), &text);
     }
-    canvas.stroke_path(&majors, &Paint::color(theme.text_secondary).with_line_width(1.4));
+    canvas.stroke_path(
+        &majors,
+        &Paint::color(theme.text_secondary).with_line_width(1.4),
+    );
 }
 
 /// Major ticks are whole numbers; drop the decimal point that `{}` on an f64 would add.
@@ -184,7 +196,13 @@ fn caption(ui: &Ui, canvas: &mut Canvas, tape: &Tape, theme: &Theme) {
 }
 
 /// The fixed digital readout, with a chevron pointing at the scale.
-fn value_box(ui: &Ui, canvas: &mut Canvas, tape: &Tape, current: f64, format: &impl Fn(f64) -> String) {
+fn value_box(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    tape: &Tape,
+    current: f64,
+    format: &impl Fn(f64) -> String,
+) {
     let theme = &ui.theme;
     let text = format(current);
 
@@ -239,7 +257,10 @@ fn value_box(ui: &Ui, canvas: &mut Canvas, tape: &Tape, current: f64, format: &i
     box_path.close();
 
     canvas.fill_path(&box_path, &Paint::color(Color::rgba(0, 0, 0, 235)));
-    canvas.stroke_path(&box_path, &Paint::color(theme.text_primary).with_line_width(1.6));
+    canvas.stroke_path(
+        &box_path,
+        &Paint::color(theme.text_primary).with_line_width(1.6),
+    );
     let _ = canvas.fill_text(text_x, cy, &text, &paint);
 }
 
@@ -293,7 +314,10 @@ pub fn draw_vsi(ui: &Ui, canvas: &mut Canvas, vsi: &Vsi, fpm: Option<f64>) {
 
     let mut panel = Path::new();
     panel.rect(vsi.x, vsi.top, vsi.width, vsi.bottom - vsi.top);
-    canvas.fill_path(&panel, &Paint::color(crate::theme::faded(theme.background, 0.55)));
+    canvas.fill_path(
+        &panel,
+        &Paint::color(crate::theme::faded(theme.background, 0.55)),
+    );
 
     let mut edge = Path::new();
     edge.move_to(vsi.x, vsi.top);
@@ -327,7 +351,10 @@ pub fn draw_vsi(ui: &Ui, canvas: &mut Canvas, vsi: &Vsi, fpm: Option<f64>) {
     let mut zero = Path::new();
     zero.move_to(vsi.x, vsi.centre_y());
     zero.line_to(vsi.x + vsi.width, vsi.centre_y());
-    canvas.stroke_path(&zero, &Paint::color(theme.text_secondary).with_line_width(1.0));
+    canvas.stroke_path(
+        &zero,
+        &Paint::color(theme.text_secondary).with_line_width(1.0),
+    );
 
     let mut caption = Paint::color(theme.text_dim);
     caption.set_font(&[ui.font()]);
@@ -373,8 +400,16 @@ pub fn draw_vsi(ui: &Ui, canvas: &mut Canvas, vsi: &Vsi, fpm: Option<f64>) {
         paint.set_font(&[ui.font()]);
         paint.set_font_size(theme.font_size_small);
         paint.set_text_align(Align::Center);
-        paint.set_text_baseline(if fpm >= 0.0 { Baseline::Bottom } else { Baseline::Top });
-        let text_y = if fpm >= 0.0 { vsi.top + 14.0 } else { vsi.bottom - 16.0 };
+        paint.set_text_baseline(if fpm >= 0.0 {
+            Baseline::Bottom
+        } else {
+            Baseline::Top
+        });
+        let text_y = if fpm >= 0.0 {
+            vsi.top + 14.0
+        } else {
+            vsi.bottom - 16.0
+        };
         let _ = canvas.fill_text(
             vsi.x + vsi.width * 0.5,
             text_y,
@@ -425,7 +460,10 @@ mod tests {
         let t = tape();
         // 10 units at 0.25 units per pixel is 40 pixels.
         let delta = t.centre_y() - t.y_for(114.0, 104.0);
-        assert!((delta - 40.0).abs() < 0.001, "moved {delta} px, expected 40");
+        assert!(
+            (delta - 40.0).abs() < 0.001,
+            "moved {delta} px, expected 40"
+        );
     }
 
     #[test]
@@ -439,7 +477,10 @@ mod tests {
         };
         assert!((v.y_for(0.0) - v.centre_y()).abs() < 0.001);
         assert!(v.y_for(500.0) < v.centre_y(), "a climb must deflect upward");
-        assert!(v.y_for(-500.0) > v.centre_y(), "a descent must deflect downward");
+        assert!(
+            v.y_for(-500.0) > v.centre_y(),
+            "a descent must deflect downward"
+        );
     }
 
     #[test]

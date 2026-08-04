@@ -192,11 +192,7 @@ pub struct Airport {
 
 impl Airport {
     pub fn label(&self) -> &str {
-        let end = self
-            .label
-            .iter()
-            .position(|b| *b == 0)
-            .unwrap_or(LABEL_LEN);
+        let end = self.label.iter().position(|b| *b == 0).unwrap_or(LABEL_LEN);
         std::str::from_utf8(&self.label[..end]).unwrap_or("")
     }
 
@@ -246,11 +242,7 @@ pub struct Airspace {
 
 impl Airspace {
     pub fn label(&self) -> &str {
-        let end = self
-            .label
-            .iter()
-            .position(|b| *b == 0)
-            .unwrap_or(LABEL_LEN);
+        let end = self.label.iter().position(|b| *b == 0).unwrap_or(LABEL_LEN);
         std::str::from_utf8(&self.label[..end]).unwrap_or("")
     }
 
@@ -390,7 +382,10 @@ impl Header {
         let mut cursor = HEADER_LEN;
         for (index, (name, len)) in lengths.iter().enumerate() {
             let stated = u32at(56 + index * 4) as usize;
-            ensure!(stated == cursor, "{name} section is at {stated}, expected {cursor}");
+            ensure!(
+                stated == cursor,
+                "{name} section is at {stated}, expected {cursor}"
+            );
             offsets[index] = stated;
             cursor += len;
         }
@@ -530,10 +525,7 @@ impl Chart {
         station.copy_from_slice(&self.bytes[o + 16..o + 24]);
         Some(Airport {
             index: index as u32,
-            position: LatLon::new(
-                self.i32at(o) as f64 / 1e6,
-                self.i32at(o + 4) as f64 / 1e6,
-            ),
+            position: LatLon::new(self.i32at(o) as f64 / 1e6, self.i32at(o + 4) as f64 / 1e6),
             label,
             station,
             elevation_ft: i16::from_le_bytes([self.bytes[o + 24], self.bytes[o + 25]]),
@@ -660,7 +652,9 @@ impl Chart {
                 let first = self.u32at(o) as usize;
                 let count = self.u32at(o + 4) as usize;
                 for index in first..first + count {
-                    let Some(airport) = self.airport_at(index) else { continue };
+                    let Some(airport) = self.airport_at(index) else {
+                        continue;
+                    };
                     if airport.tier > max_tier {
                         continue;
                     }
@@ -761,7 +755,11 @@ impl Chart {
     /// renderer closes the path itself. Iterating allocates nothing.
     pub fn ring(&self, space: &Airspace, ring: usize) -> RingIter<'_> {
         if ring >= space.ring_count as usize {
-            return RingIter { chart: self, next: 0, end: 0 };
+            return RingIter {
+                chart: self,
+                next: 0,
+                end: 0,
+            };
         }
         let o = self.ring_off + (space.ring_first as usize + ring) * RING_LEN;
         let first = self.u32at(o) as usize;
@@ -871,7 +869,11 @@ mod tests {
         // The join key for weather, and deliberately not the label the symbol shows.
         assert_eq!(mmu.station(), "KMMU");
         assert_eq!(mmu.label(), "MMU");
-        assert!(mmu.elevation_ft > 100 && mmu.elevation_ft < 400, "{}", mmu.elevation_ft);
+        assert!(
+            mmu.elevation_ft > 100 && mmu.elevation_ft < 400,
+            "{}",
+            mmu.elevation_ft
+        );
 
         let runways = chart.runways(&mmu);
         assert!(!runways.is_empty(), "MMU has runways");
@@ -888,7 +890,10 @@ mod tests {
         assert!(
             freqs.iter().any(|f| f.kind == FreqKind::Atis),
             "got {:?}",
-            freqs.iter().map(|f| (f.kind, f.mhz_text())).collect::<Vec<_>>()
+            freqs
+                .iter()
+                .map(|f| (f.kind, f.mhz_text()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -901,7 +906,11 @@ mod tests {
         let mut checked = 0usize;
         for airport in chart.airports_in(&bounds, Tier::Heliport) {
             if airport.frequency_count() == 0 {
-                assert!(chart.frequencies(&airport).is_empty(), "{}", airport.label());
+                assert!(
+                    chart.frequencies(&airport).is_empty(),
+                    "{}",
+                    airport.label()
+                );
                 checked += 1;
             }
             if airport.runway_count() == 0 {
@@ -910,7 +919,10 @@ mod tests {
             assert_eq!(chart.runways(&airport).len(), airport.runway_count());
             assert_eq!(chart.frequencies(&airport).len(), airport.frequency_count());
         }
-        assert!(checked > 0, "expected some fields with no frequencies near New York");
+        assert!(
+            checked > 0,
+            "expected some fields with no frequencies near New York"
+        );
     }
 
     #[test]
@@ -924,7 +936,12 @@ mod tests {
         for index in 0..chart.airport_count() {
             let airport = chart.airport_at(index).expect("index in range");
             let name = chart.name(&airport);
-            assert!(name.len() <= 40, "{} has a {}-byte name", airport.label(), name.len());
+            assert!(
+                name.len() <= 40,
+                "{} has a {}-byte name",
+                airport.label(),
+                name.len()
+            );
             if !name.is_empty() {
                 names += 1;
             }
@@ -945,12 +962,23 @@ mod tests {
                 freqs += 1;
             }
             for r in chart.runways(&airport) {
-                assert!(r.heading_deg < 360, "{} has {} deg", airport.label(), r.heading_deg);
+                assert!(
+                    r.heading_deg < 360,
+                    "{} has {} deg",
+                    airport.label(),
+                    r.heading_deg
+                );
                 runways += 1;
             }
         }
-        assert_eq!(freqs, 10_847, "every frequency in the file should be reachable");
-        assert_eq!(runways, 14_926, "every runway orientation should be reachable");
+        assert_eq!(
+            freqs, 10_847,
+            "every frequency in the file should be reachable"
+        );
+        assert_eq!(
+            runways, 14_926,
+            "every runway orientation should be reachable"
+        );
         assert_eq!(names, 18_108, "every airport should carry a name");
     }
 
@@ -971,7 +999,11 @@ mod tests {
             let airport = chart.airport_at(index).expect("index in range");
             let station = airport.station();
             if !station.is_empty() {
-                assert_eq!(station.len(), 4, "{station} is not a four-character identifier");
+                assert_eq!(
+                    station.len(),
+                    4,
+                    "{station} is not a four-character identifier"
+                );
                 assert!(
                     station.chars().all(|c| c.is_ascii_alphanumeric()),
                     "{station} is not an identifier"
@@ -1012,7 +1044,10 @@ mod tests {
             (124_250, "124.25"),
             (120_000, "120.0"),
         ] {
-            let f = Frequency { khz, kind: FreqKind::Ctaf };
+            let f = Frequency {
+                khz,
+                kind: FreqKind::Ctaf,
+            };
             assert_eq!(f.mhz_text(), want, "{khz} kHz");
         }
     }
@@ -1027,7 +1062,10 @@ mod tests {
             (180, "18/36"),
             (0, "01/19"),
         ] {
-            let r = Runway { heading_deg: heading, length_ft: 5000 };
+            let r = Runway {
+                heading_deg: heading,
+                length_ft: 5000,
+            };
             assert_eq!(r.designator(), want, "{heading} degrees");
         }
     }
@@ -1044,8 +1082,16 @@ mod tests {
             .iter()
             .find(|a| a.label() == "MMU")
             .expect("MMU within 10 nm of the capture site");
-        assert!((mmu.position.lat - 40.799).abs() < 0.01, "{}", mmu.position.lat);
-        assert!((mmu.position.lon + 74.415).abs() < 0.01, "{}", mmu.position.lon);
+        assert!(
+            (mmu.position.lat - 40.799).abs() < 0.01,
+            "{}",
+            mmu.position.lat
+        );
+        assert!(
+            (mmu.position.lon + 74.415).abs() < 0.01,
+            "{}",
+            mmu.position.lon
+        );
         assert_eq!(mmu.kind, Kind::Medium);
         assert_eq!(mmu.tier, Tier::Major);
         assert!(mmu.hard_surface());
@@ -1151,7 +1197,10 @@ mod tests {
             worst.1,
             worst.0
         );
-        assert!(worst.0 > 0, "no airports anywhere, which means the query is broken");
+        assert!(
+            worst.0 > 0,
+            "no airports anywhere, which means the query is broken"
+        );
     }
 
     #[test]
@@ -1167,13 +1216,20 @@ mod tests {
             .expect("Newark sits under the New York Class B");
         assert!(b.ring_count() >= 1);
         let points: Vec<LatLon> = chart.ring(b, 0).collect();
-        assert!(points.len() >= 3, "a ring needs three points to enclose anything");
+        assert!(
+            points.len() >= 3,
+            "a ring needs three points to enclose anything"
+        );
         assert_ne!(
             points.first().map(|p| (p.lat, p.lon)),
             points.last().map(|p| (p.lat, p.lon)),
             "the closing point should have been dropped at build time"
         );
-        assert!(b.upper_ft > 1000, "a Class B has a real ceiling: {}", b.upper_ft);
+        assert!(
+            b.upper_ft > 1000,
+            "a Class B has a real ceiling: {}",
+            b.upper_ft
+        );
     }
 
     #[test]
@@ -1214,7 +1270,11 @@ mod tests {
             assert!(space.ring_count() >= 1, "{} has no rings", space.label());
             for ring in 0..space.ring_count() {
                 let points: Vec<LatLon> = chart.ring(space, ring).collect();
-                assert!(points.len() >= 3, "{} ring {ring} is degenerate", space.label());
+                assert!(
+                    points.len() >= 3,
+                    "{} ring {ring} is degenerate",
+                    space.label()
+                );
                 for p in &points {
                     assert!(
                         p.lat.is_finite() && p.lon.is_finite(),
@@ -1225,7 +1285,10 @@ mod tests {
                 vertices += points.len();
             }
         }
-        assert_eq!(vertices, 128_479, "every vertex in the file should be reachable");
+        assert_eq!(
+            vertices, 128_479,
+            "every vertex in the file should be reachable"
+        );
     }
 
     #[test]
@@ -1233,15 +1296,24 @@ mod tests {
         // The end-to-end case, against the shipped geometry rather than a synthetic square.
         let Some(chart) = conus() else { return };
         let over_ewr = chart.airspace_at(LatLon::new(40.6895, -74.1745));
-        assert!(!over_ewr.is_empty(), "Newark sits under the New York Class B");
+        assert!(
+            !over_ewr.is_empty(),
+            "Newark sits under the New York Class B"
+        );
         assert!(
             over_ewr.iter().any(|a| a.class == Class::B),
             "got {:?}",
-            over_ewr.iter().map(|a| (a.class, a.label())).collect::<Vec<_>>()
+            over_ewr
+                .iter()
+                .map(|a| (a.class, a.label()))
+                .collect::<Vec<_>>()
         );
         // Lowest floor first: that is the order you meet them climbing.
         let floors: Vec<i32> = over_ewr.iter().map(|a| a.floor_ft()).collect();
-        assert!(floors.windows(2).all(|w| w[0] <= w[1]), "not sorted: {floors:?}");
+        assert!(
+            floors.windows(2).all(|w| w[0] <= w[1]),
+            "not sorted: {floors:?}"
+        );
     }
 
     #[test]
@@ -1309,8 +1381,10 @@ mod tests {
         // diamond puts a vertex on the ray by construction.
         let Some(chart) = conus() else { return };
         let all = chart.airspace_in(&Bounds {
-            lat_min: 40_000_000, lat_max: 41_000_000,
-            lon_min: -75_000_000, lon_max: -74_000_000,
+            lat_min: 40_000_000,
+            lat_max: 41_000_000,
+            lon_min: -75_000_000,
+            lon_max: -74_000_000,
         });
         let space = all.first().expect("something near New York");
         let ring: Vec<LatLon> = chart.ring(space, 0).collect();
@@ -1334,7 +1408,10 @@ mod tests {
     fn a_surface_floor_sorts_as_zero_rather_than_by_a_meaningless_number() {
         let Some(chart) = conus() else { return };
         let all = chart.airspace_in(&Bounds {
-            lat_min: i32::MIN, lat_max: i32::MAX, lon_min: i32::MIN, lon_max: i32::MAX,
+            lat_min: i32::MIN,
+            lat_max: i32::MAX,
+            lon_min: i32::MIN,
+            lon_max: i32::MAX,
         });
         let surface: Vec<_> = all.iter().filter(|a| a.lower_is_surface()).collect();
         assert!(!surface.is_empty());
@@ -1378,8 +1455,14 @@ mod tests {
         let Some(chart) = conus() else { return };
         let good = chart.bytes.clone();
 
-        assert!(Chart::from_bytes(good[..HEADER_LEN - 1].to_vec()).is_err(), "short");
-        assert!(Chart::from_bytes(good[..good.len() - 8].to_vec()).is_err(), "truncated");
+        assert!(
+            Chart::from_bytes(good[..HEADER_LEN - 1].to_vec()).is_err(),
+            "short"
+        );
+        assert!(
+            Chart::from_bytes(good[..good.len() - 8].to_vec()).is_err(),
+            "truncated"
+        );
 
         let mut magic = good.clone();
         magic[0] = b'X';
@@ -1392,6 +1475,9 @@ mod tests {
         // A count that disagrees with the offsets must be caught at load, not at the first draw.
         let mut count = good;
         count[16] = count[16].wrapping_add(1);
-        assert!(Chart::from_bytes(count).is_err(), "airport count vs offsets");
+        assert!(
+            Chart::from_bytes(count).is_err(),
+            "airport count vs offsets"
+        );
     }
 }

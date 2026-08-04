@@ -52,13 +52,13 @@ use crate::projection::{Projection, NM_PER_DEG_LAT};
 /// The conventional green / yellow / orange / red / magenta radar ramp, saturated a little harder
 /// than a desktop palette would be because it has to survive daylight on a 7" panel.
 const RAMP: [(u8, u8, u8); 7] = [
-    (16, 150, 24),   // light
-    (10, 120, 16),   // moderate green
-    (235, 215, 60),  // yellow
-    (240, 160, 35),  // orange
-    (235, 60, 45),   // red
-    (185, 28, 28),   // dark red
-    (210, 45, 195),  // magenta / extreme
+    (16, 150, 24),  // light
+    (10, 120, 16),  // moderate green
+    (235, 215, 60), // yellow
+    (240, 160, 35), // orange
+    (235, 60, 45),  // red
+    (185, 28, 28),  // dark red
+    (210, 45, 195), // magenta / extreme
 ];
 
 /// Base opacity of the underlay. Weather must never obscure a traffic symbol.
@@ -185,7 +185,12 @@ pub struct Patch {
     pub stats: MosaicStats,
 }
 
-const TRANSPARENT: RGBA8 = RGBA8 { r: 0, g: 0, b: 0, a: 0 };
+const TRANSPARENT: RGBA8 = RGBA8 {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: 0,
+};
 
 impl Patch {
     /// Composite every visible bin of every block into a fresh patch centred on `centre`.

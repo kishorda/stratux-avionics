@@ -260,7 +260,11 @@ pub fn token_hazard(token: &str) -> Hazard {
     // Heavy anything, and the obscurations that actually cost visibility. Mist (BR) and haze (HZ)
     // are deliberately absent: they appear in a large share of routine reports, and a highlight
     // that fires most of the time trains the eye to ignore it.
-    if qualifier == "+" || groups.iter().any(|g| matches!(*g, "FG" | "FU" | "SA" | "DU")) {
+    if qualifier == "+"
+        || groups
+            .iter()
+            .any(|g| matches!(*g, "FG" | "FU" | "SA" | "DU"))
+    {
         return Hazard::Caution;
     }
 
@@ -307,7 +311,10 @@ fn parse_visibility(token: &str, whole: Option<f32>) -> Option<f32> {
     let body = token.strip_suffix("SM")?;
     // M means "less than", P means "more than". Both are reported at the limit of what the
     // sensor can resolve, so the numeric value is the right thing to categorise on.
-    let body = body.strip_prefix('M').or_else(|| body.strip_prefix('P')).unwrap_or(body);
+    let body = body
+        .strip_prefix('M')
+        .or_else(|| body.strip_prefix('P'))
+        .unwrap_or(body);
 
     let value = if let Some((num, den)) = body.split_once('/') {
         num.parse::<f32>().ok()? / den.parse::<f32>().ok()?
@@ -462,7 +469,11 @@ mod tests {
         // The commonest mistake in home-grown METAR code: SCT018 is not a ceiling, so this report
         // is VFR on its 10SM visibility and its BKN035 ceiling, not IFR on the scattered layer.
         let s = summarise(TSTORM);
-        assert_eq!(s.ceiling_ft, Some(3500), "BKN035 is the ceiling, not SCT018");
+        assert_eq!(
+            s.ceiling_ft,
+            Some(3500),
+            "BKN035 is the ceiling, not SCT018"
+        );
         assert_eq!(s.category, Some(FlightCategory::Vfr));
     }
 
@@ -483,10 +494,18 @@ mod tests {
     fn the_worse_of_ceiling_and_visibility_governs() {
         // Good ceiling, bad visibility.
         let s = summarise("KXXX 291853Z 1/2SM FG OVC050 05/05 A2990");
-        assert_eq!(s.category, Some(FlightCategory::Lifr), "visibility should govern");
+        assert_eq!(
+            s.category,
+            Some(FlightCategory::Lifr),
+            "visibility should govern"
+        );
         // Bad ceiling, good visibility.
         let s = summarise("KXXX 291853Z 10SM OVC004 05/05 A2990");
-        assert_eq!(s.category, Some(FlightCategory::Lifr), "ceiling should govern");
+        assert_eq!(
+            s.category,
+            Some(FlightCategory::Lifr),
+            "ceiling should govern"
+        );
     }
 
     #[test]
@@ -499,7 +518,10 @@ mod tests {
 
     #[test]
     fn less_than_and_more_than_visibility_parse() {
-        assert_eq!(summarise("KXXX 291853Z M1/4SM FG").visibility_sm, Some(0.25));
+        assert_eq!(
+            summarise("KXXX 291853Z M1/4SM FG").visibility_sm,
+            Some(0.25)
+        );
         assert_eq!(summarise("KXXX 291853Z P6SM").visibility_sm, Some(6.0));
     }
 
@@ -521,7 +543,10 @@ mod tests {
     #[test]
     fn a_report_with_neither_ceiling_nor_visibility_has_no_category() {
         // Never guess. A PIREP or a fragment must not be assigned a category.
-        assert_eq!(summarise("UA /OV KDEN /TM 1840 /FL085 /TP C172").category, None);
+        assert_eq!(
+            summarise("UA /OV KDEN /TM 1840 /FL085 /TP C172").category,
+            None
+        );
         assert_eq!(summarise("").category, None);
     }
 
@@ -537,7 +562,9 @@ mod tests {
 
     #[test]
     fn thunderstorms_and_freezing_are_warnings() {
-        for token in ["TSRA", "+TSRA", "VCTS", "TS", "FZRA", "FZFG", "FZDZ", "GR", "PL", "IC"] {
+        for token in [
+            "TSRA", "+TSRA", "VCTS", "TS", "FZRA", "FZFG", "FZDZ", "GR", "PL", "IC",
+        ] {
             assert_eq!(token_hazard(token), Hazard::Warning, "{token}");
         }
     }
@@ -562,7 +589,9 @@ mod tests {
     fn station_identifiers_are_not_mistaken_for_weather() {
         // The reason this parses the grammar instead of searching for substrings: all of these
         // contain a valid two-letter code and none of them are weather.
-        for token in ["KTSM", "TSNO", "KFGZ", "KRAP", "KSNA", "AO2", "SLP123", "RMK"] {
+        for token in [
+            "KTSM", "TSNO", "KFGZ", "KRAP", "KSNA", "AO2", "SLP123", "RMK",
+        ] {
             assert_eq!(
                 token_hazard(token),
                 Hazard::None,
@@ -597,9 +626,17 @@ mod tests {
     #[test]
     fn body_hazard_takes_the_worst_of_tokens_and_category() {
         assert_eq!(body_hazard(VFR), Hazard::None);
-        assert_eq!(body_hazard(MVFR), Hazard::Caution, "MVFR alone is a caution");
+        assert_eq!(
+            body_hazard(MVFR),
+            Hazard::Caution,
+            "MVFR alone is a caution"
+        );
         assert_eq!(body_hazard(IFR), Hazard::Warning, "IFR alone is a warning");
-        assert_eq!(body_hazard(TSTORM), Hazard::Warning, "VFR, but a thunderstorm");
+        assert_eq!(
+            body_hazard(TSTORM),
+            Hazard::Warning,
+            "VFR, but a thunderstorm"
+        );
     }
 
     #[test]
@@ -623,7 +660,10 @@ mod tests {
 
         // Speed over 99 knots is three digits.
         let strong = parse_wind("240105G130KT").expect("hurricane force");
-        assert_eq!((strong.direction_deg, strong.speed_kt, strong.gust_kt), (Some(240), 105, Some(130)));
+        assert_eq!(
+            (strong.direction_deg, strong.speed_kt, strong.gust_kt),
+            (Some(240), 105, Some(130))
+        );
     }
 
     #[test]
@@ -681,14 +721,14 @@ mod tests {
             "KMMU",        // the station
             "METAR",
             "AUTO",
-            "100KT",       // three digits then nothing to be a speed
+            "100KT", // three digits then nothing to be a speed
             "1KT",
             "KT",
-            "37010KT",     // 370 is not a direction
-            "1501KT",      // one-digit speed
-            "15014G2KT",   // one-digit gust
-            "15014",       // no unit
-            "150X14KT",    // not digits
+            "37010KT",   // 370 is not a direction
+            "1501KT",    // one-digit speed
+            "15014G2KT", // one-digit gust
+            "15014",     // no unit
+            "150X14KT",  // not digits
             "",
         ] {
             assert!(parse_wind(token).is_none(), "{token:?} is not a wind group");
@@ -701,7 +741,10 @@ mod tests {
         // observation is the one at the front.
         let s = summarise("METAR KMMU 021656Z 15014G21KT 10SM BKN031 27/22 A2993");
         let w = s.wind.expect("wind");
-        assert_eq!((w.direction_deg, w.speed_kt, w.gust_kt), (Some(150), 14, Some(21)));
+        assert_eq!(
+            (w.direction_deg, w.speed_kt, w.gust_kt),
+            (Some(150), 14, Some(21))
+        );
 
         let two = summarise("METAR KMMU 021656Z 09005KT 10SM CLR 27/22 A2993 TEMPO 27020G35KT");
         assert_eq!(two.wind.unwrap().speed_kt, 5, "the first group governs");
@@ -710,7 +753,10 @@ mod tests {
     #[test]
     fn a_report_with_no_wind_group_yields_no_wind() {
         // Never a guess, the same rule the category follows.
-        assert_eq!(summarise("METAR KMMU 021656Z 10SM CLR 27/22 A2993").wind, None);
+        assert_eq!(
+            summarise("METAR KMMU 021656Z 10SM CLR 27/22 A2993").wind,
+            None
+        );
         assert_eq!(summarise("").wind, None);
     }
 

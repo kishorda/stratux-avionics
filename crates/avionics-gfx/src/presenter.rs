@@ -81,7 +81,9 @@ pub(crate) unsafe fn query_gl_info(load: impl Fn(&str) -> *const c_void) -> GlIn
         if p.is_null() {
             String::new()
         } else {
-            CStr::from_ptr(p as *const c_char).to_string_lossy().into_owned()
+            CStr::from_ptr(p as *const c_char)
+                .to_string_lossy()
+                .into_owned()
         }
     };
 

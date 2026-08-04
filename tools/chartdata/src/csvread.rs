@@ -136,7 +136,10 @@ mod tests {
         let text = "ident,type,latitude_deg\nKMMU,medium_airport,40.79\n";
         let r = Reader::parse(text).unwrap();
         assert_eq!(r.column("latitude_deg").unwrap(), 2);
-        assert!(r.column("elevation_ft").is_err(), "a missing column must fail loudly");
+        assert!(
+            r.column("elevation_ft").is_err(),
+            "a missing column must fail loudly"
+        );
     }
 
     #[test]

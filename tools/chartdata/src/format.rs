@@ -287,7 +287,12 @@ impl Grid {
             lon_max = lon_max.max(lon);
         }
         if lat_min > lat_max {
-            return Self { lat0: 0, lon0: 0, rows: 1, cols: 1 };
+            return Self {
+                lat0: 0,
+                lon0: 0,
+                rows: 1,
+                cols: 1,
+            };
         }
         let lat0 = div_floor(lat_min, 1_000_000 * CELL_DEG);
         let lon0 = div_floor(lon_min, 1_000_000 * CELL_DEG);
@@ -568,9 +573,7 @@ pub fn read_summary(bytes: &[u8]) -> Result<Summary> {
     }
     let u16at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
     let i16at = |o: usize| i16::from_le_bytes([bytes[o], bytes[o + 1]]);
-    let u32at = |o: usize| {
-        u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-    };
+    let u32at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
 
     let version = u16at(8);
     ensure!(version == VERSION, "unsupported chart version {version}");
@@ -633,9 +636,7 @@ pub fn read_summary(bytes: &[u8]) -> Result<Summary> {
 /// Every airport in the file, in stored order. For verification, not for the display.
 pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
     let summary = read_summary(bytes)?;
-    let u32at = |o: usize| {
-        u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-    };
+    let u32at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
     let base = u32at(60) as usize;
     let runway_base = u32at(76) as usize;
     let freq_base = u32at(80) as usize;
@@ -728,9 +729,7 @@ fn freq_kind(byte: u8) -> FreqKind {
 /// Class and vertex count of every airspace record, in stored order. For verification.
 pub fn read_airspace(bytes: &[u8]) -> Result<Vec<(Class, u32)>> {
     let summary = read_summary(bytes)?;
-    let u32at = |o: usize| {
-        u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-    };
+    let u32at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
     let base = u32at(64) as usize;
     let ring_base = u32at(68) as usize;
 
@@ -786,12 +785,24 @@ mod tests {
             tier,
             flags: FLAG_HARD_SURFACE | FLAG_LIGHTED,
             runways: vec![
-                Runway { heading_deg: 50, length_ft: 5999 },
-                Runway { heading_deg: 130, length_ft: 3999 },
+                Runway {
+                    heading_deg: 50,
+                    length_ft: 5999,
+                },
+                Runway {
+                    heading_deg: 130,
+                    length_ft: 3999,
+                },
             ],
             frequencies: vec![
-                Frequency { khz: 118_100, kind: FreqKind::Ctaf },
-                Frequency { khz: 124_250, kind: FreqKind::Atis },
+                Frequency {
+                    khz: 118_100,
+                    kind: FreqKind::Ctaf,
+                },
+                Frequency {
+                    khz: 124_250,
+                    kind: FreqKind::Atis,
+                },
             ],
         }
     }
@@ -917,7 +928,12 @@ mod tests {
 
     #[test]
     fn western_longitudes_do_not_round_toward_zero() {
-        let grid = Grid { lat0: 24, lon0: -125, rows: 26, cols: 60 };
+        let grid = Grid {
+            lat0: 24,
+            lon0: -125,
+            rows: 26,
+            cols: 60,
+        };
         let west = grid.cell(40_000_000, -74_500_000);
         let east = grid.cell(40_000_000, -74_000_000);
         assert_ne!(west, east, "-74.5 and -74.0 are a degree apart");
@@ -946,8 +962,14 @@ mod tests {
     #[test]
     fn a_truncated_or_foreign_file_is_rejected_rather_than_misread() {
         let bytes = write(&chart());
-        assert!(read_summary(&bytes[..HEADER_LEN - 1]).is_err(), "short header");
-        assert!(read_summary(&bytes[..bytes.len() - 8]).is_err(), "truncated body");
+        assert!(
+            read_summary(&bytes[..HEADER_LEN - 1]).is_err(),
+            "short header"
+        );
+        assert!(
+            read_summary(&bytes[..bytes.len() - 8]).is_err(),
+            "truncated body"
+        );
 
         let mut wrong = bytes.clone();
         wrong[0] = b'X';
@@ -955,7 +977,10 @@ mod tests {
 
         let mut old = bytes.clone();
         old[8] = 1;
-        assert!(read_summary(&old).is_err(), "version 1 must be refused, not reinterpreted");
+        assert!(
+            read_summary(&old).is_err(),
+            "version 1 must be refused, not reinterpreted"
+        );
 
         let mut count = bytes;
         count[16] = count[16].wrapping_add(1);

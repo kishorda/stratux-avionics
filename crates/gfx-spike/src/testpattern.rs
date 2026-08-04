@@ -23,9 +23,11 @@ use std::path::{Path as FsPath, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use avionics_gfx::femtovg::{Align, Baseline, Color, FontId, ImageFlags, ImageId, Paint, Path, PixelFormat};
 use avionics_gfx::femtovg::imgref::ImgRef;
 use avionics_gfx::femtovg::rgb::RGBA8;
+use avionics_gfx::femtovg::{
+    Align, Baseline, Color, FontId, ImageFlags, ImageId, Paint, Path, PixelFormat,
+};
 use avionics_gfx::{Canvas, GlInfo};
 
 /// Fonts to try, in order. DejaVuSans is present on both Ubuntu and Raspberry Pi OS.
@@ -59,14 +61,14 @@ fn find_font() -> Result<PathBuf> {
 /// Kept here so the spike's mosaic looks like the real thing; M5 owns the authoritative
 /// version along with the regional-vs-CONUS intensity distinction.
 const NEXRAD_PALETTE: [(u8, u8, u8, u8); 8] = [
-    (0, 0, 0, 0),          // 0: no/negligible return
-    (0, 0, 0, 0),          // 1: valid, no precipitation
-    (16, 140, 16, 190),    // 2: light
-    (24, 200, 24, 205),    // 3
-    (225, 210, 40, 215),   // 4: moderate
-    (235, 150, 30, 225),   // 5
-    (220, 50, 40, 235),    // 6: heavy
-    (200, 40, 190, 245),   // 7: extreme
+    (0, 0, 0, 0),        // 0: no/negligible return
+    (0, 0, 0, 0),        // 1: valid, no precipitation
+    (16, 140, 16, 190),  // 2: light
+    (24, 200, 24, 205),  // 3
+    (225, 210, 40, 215), // 4: moderate
+    (235, 150, 30, 225), // 5
+    (220, 50, 40, 235),  // 6: heavy
+    (200, 40, 190, 245), // 7: extreme
 ];
 
 pub struct TestPattern {
@@ -215,7 +217,10 @@ impl TestPattern {
                 Color::rgb(220, 235, 245)
             };
             canvas.fill_path(&path, &Paint::color(colour));
-            canvas.stroke_path(&path, &Paint::color(Color::rgb(10, 14, 20)).with_line_width(1.0));
+            canvas.stroke_path(
+                &path,
+                &Paint::color(Color::rgb(10, 14, 20)).with_line_width(1.0),
+            );
             canvas.restore();
 
             // A tag next to each symbol, as the real display will have.
@@ -224,7 +229,12 @@ impl TestPattern {
             tag.set_font_size(11.0);
             tag.set_text_align(Align::Left);
             tag.set_text_baseline(Baseline::Middle);
-            let _ = canvas.fill_text(x + 14.0, y, format!("N{:03}TC +{:02}", 100 + i * 7, i * 3), &tag);
+            let _ = canvas.fill_text(
+                x + 14.0,
+                y,
+                format!("N{:03}TC +{:02}", 100 + i * 7, i * 3),
+                &tag,
+            );
         }
 
         // Own-ship at the centre.
@@ -325,7 +335,12 @@ impl TestPattern {
         frames.set_font_size(11.0);
         frames.set_text_align(Align::Right);
         frames.set_text_baseline(Baseline::Top);
-        let _ = canvas.fill_text(w - 10.0, 29.0, format!("frame {}", self.frame_count), &frames);
+        let _ = canvas.fill_text(
+            w - 10.0,
+            29.0,
+            format!("frame {}", self.frame_count),
+            &frames,
+        );
 
         // A range of sizes, since the glyph atlas is per-size and small text on a 7" panel is
         // where atlas problems show first.

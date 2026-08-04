@@ -79,8 +79,15 @@ Other
 
 #[derive(Debug, Clone)]
 enum Source {
-    Live { host: String, port: u16 },
-    Replay { path: PathBuf, speed: f64, repeat: bool },
+    Live {
+        host: String,
+        port: u16,
+    },
+    Replay {
+        path: PathBuf,
+        speed: f64,
+        repeat: bool,
+    },
 }
 
 /// Attach the airport and airspace file, if there is one.
@@ -126,7 +133,9 @@ fn find_chart(args: &Args) -> Option<avionics_ui::Chart> {
                 );
                 return Some(chart);
             }
-            Err(e) if explicit => tracing::warn!(path = %path.display(), error = %e, "--chart could not be loaded; no map layer"),
+            Err(e) if explicit => {
+                tracing::warn!(path = %path.display(), error = %e, "--chart could not be loaded; no map layer")
+            }
             Err(_) => {}
         }
     }
@@ -230,10 +239,8 @@ fn parse_args() -> Result<Option<Args>> {
 
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
-        let mut value = || -> Result<String> {
-            argv.next()
-                .with_context(|| format!("{arg} needs a value"))
-        };
+        let mut value =
+            || -> Result<String> { argv.next().with_context(|| format!("{arg} needs a value")) };
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--host" => host = value()?,
@@ -298,7 +305,11 @@ fn parse_args() -> Result<Option<Args>> {
     }
 
     args.source = match replay {
-        Some(path) => Source::Replay { path, speed, repeat },
+        Some(path) => Source::Replay {
+            path,
+            speed,
+            repeat,
+        },
         None => Source::Live { host, port },
     };
     Ok(Some(args))
@@ -310,7 +321,11 @@ fn install_signal_handlers() -> Result<()> {
     extern "C" fn handler(_: i32) {
         SHUTDOWN.store(true, Ordering::SeqCst);
     }
-    let action = SigAction::new(SigHandler::Handler(handler), SaFlags::empty(), SigSet::empty());
+    let action = SigAction::new(
+        SigHandler::Handler(handler),
+        SaFlags::empty(),
+        SigSet::empty(),
+    );
     // SAFETY: the handler does nothing but an atomic store, which is async-signal-safe.
     unsafe {
         sigaction(Signal::SIGINT, &action).context("installing SIGINT handler")?;
@@ -658,7 +673,11 @@ async fn ingest(source: Source, state: Shared) {
                 ..Default::default()
             })
         }
-        Source::Replay { path, speed, repeat } => {
+        Source::Replay {
+            path,
+            speed,
+            repeat,
+        } => {
             let frames = match record::read_all(&path) {
                 Ok(frames) => frames,
                 Err(e) => {
@@ -723,7 +742,11 @@ fn run_check(args: &Args) -> Result<()> {
                 for (name, connected, mode) in &probe.connectors {
                     println!(
                         "  connector   : {name} {} {}",
-                        if *connected { "connected" } else { "disconnected" },
+                        if *connected {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        },
                         mode.as_deref().unwrap_or("(no modes)")
                     );
                 }
@@ -765,9 +788,7 @@ fn run_check(args: &Args) -> Result<()> {
                     address
                         .to_socket_addrs()
                         .map_err(|e| anyhow::anyhow!("{e}"))
-                        .and_then(|mut it| {
-                            it.next().ok_or_else(|| anyhow::anyhow!("no address"))
-                        })
+                        .and_then(|mut it| it.next().ok_or_else(|| anyhow::anyhow!("no address")))
                 })
                 .map_err(|e| anyhow::anyhow!("resolving {address}: {e}"))?,
             Duration::from_secs(3),
@@ -793,7 +814,9 @@ fn run_check(args: &Args) -> Result<()> {
             chart.airport_count(),
             chart.airspace_count()
         ),
-        None => println!("  map layer   : WARN no conus.chart found; airports and airspace will not draw"),
+        None => println!(
+            "  map layer   : WARN no conus.chart found; airports and airspace will not draw"
+        ),
     }
 
     println!();
@@ -801,7 +824,11 @@ fn run_check(args: &Args) -> Result<()> {
         println!("All required checks passed.");
         Ok(())
     } else {
-        bail!("{} required check(s) failed: {}", failures.len(), failures.join(", "))
+        bail!(
+            "{} required check(s) failed: {}",
+            failures.len(),
+            failures.join(", ")
+        )
     }
 }
 
@@ -882,7 +909,10 @@ impl RenderTiming {
     fn report(&self, mosaic: &avionics_ui::nexrad::MosaicStats) {
         println!("\n=== render timing ===");
         println!("  frames        : {}", self.frames);
-        println!("  mean draw     : {:.2} ms", self.mean().as_secs_f64() * 1000.0);
+        println!(
+            "  mean draw     : {:.2} ms",
+            self.mean().as_secs_f64() * 1000.0
+        );
         println!(
             "  worst draw    : {:.2} ms  (frame {})",
             self.worst.as_secs_f64() * 1000.0,
@@ -1175,8 +1205,15 @@ mod tests {
         // And the debt must not persist: the frame after it is due one interval from now, not
         // still somewhere in the backlog.
         let next = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
-        assert!(next > before, "the deadline after a resync is still in the past");
-        assert_eq!(next - due, THIRTY_HZ, "cadence resumes from now, not from the debt");
+        assert!(
+            next > before,
+            "the deadline after a resync is still in the past"
+        );
+        assert_eq!(
+            next - due,
+            THIRTY_HZ,
+            "cadence resumes from now, not from the debt"
+        );
     }
 
     #[test]
@@ -1189,6 +1226,9 @@ mod tests {
         assert!(pacer.next_due.is_none());
 
         let due = pacer.next_due(Some(THIRTY_HZ)).expect("capped");
-        assert!(due <= Instant::now(), "the first frame back should not wait");
+        assert!(
+            due <= Instant::now(),
+            "the first frame back should not wait"
+        );
     }
 }

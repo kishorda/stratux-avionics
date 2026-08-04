@@ -84,7 +84,6 @@ pub fn frequency_index(
     Ok(out)
 }
 
-
 /// Whether a light aircraft could actually tune this.
 ///
 /// The VHF communication band is 118.000–136.975 and that is the whole of what a civil comm radio
@@ -179,7 +178,9 @@ local_code,home_link,wikipedia_link,keywords\n";
             "{FREQ_HEADER}1,1,\"KAAA\",\"UNIC\",\"UNICOM\",122.8\n2,1,\"KAAA\",\"CTAF\",\"CTAF\",122.8\n"
         );
         let index = frequency_index(&freqs, &apts).unwrap();
-        let i = index.binary_search_by(|(id, _)| id.as_str().cmp("AAA")).unwrap();
+        let i = index
+            .binary_search_by(|(id, _)| id.as_str().cmp("AAA"))
+            .unwrap();
         assert_eq!(index[i].1.len(), 1);
         assert_eq!(index[i].1[0].kind, FreqKind::Ctaf);
     }
@@ -189,9 +190,9 @@ local_code,home_link,wikipedia_link,keywords\n";
         // Real, and untunable on a civil comm radio. "TWR 257.600" at Washington National reads as
         // a number you could call the tower on.
         for (khz, kind) in [
-            (257_600, FreqKind::Tower),   // DCA, military UHF
-            (357_150, FreqKind::Ground),  // Fort Rucker
-            (138_100, FreqKind::Ground),  // Seymour Johnson, military VHF
+            (257_600, FreqKind::Tower),  // DCA, military UHF
+            (357_150, FreqKind::Ground), // Fort Rucker
+            (138_100, FreqKind::Ground), // Seymour Johnson, military VHF
             (322_100, FreqKind::Ctaf),
             (199_250, FreqKind::Advisory),
         ] {
@@ -199,9 +200,15 @@ local_code,home_link,wikipedia_link,keywords\n";
         }
         // The comm band itself, and its edges.
         for khz in [118_000, 121_975, 136_975] {
-            assert!(tunable(khz, FreqKind::Tower), "{khz} kHz is in the comm band");
+            assert!(
+                tunable(khz, FreqKind::Tower),
+                "{khz} kHz is in the comm band"
+            );
         }
-        assert!(!tunable(117_975, FreqKind::Tower), "just below the comm band");
+        assert!(
+            !tunable(117_975, FreqKind::Tower),
+            "just below the comm band"
+        );
         assert!(!tunable(137_000, FreqKind::Tower), "just above it");
     }
 
@@ -230,7 +237,9 @@ local_code,home_link,wikipedia_link,keywords\n";
 3,1,\"KAAA\",\"ATIS\",\"ATIS\",124.25\n"
         );
         let index = frequency_index(&freqs, &apts).unwrap();
-        let i = index.binary_search_by(|(id, _)| id.as_str().cmp("AAA")).unwrap();
+        let i = index
+            .binary_search_by(|(id, _)| id.as_str().cmp("AAA"))
+            .unwrap();
         assert_eq!(index[i].1.len(), 1);
         assert_eq!(index[i].1[0].khz, 124_250);
     }

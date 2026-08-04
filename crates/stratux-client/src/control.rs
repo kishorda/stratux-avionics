@@ -110,7 +110,10 @@ mod tests {
     fn status_codes_are_parsed_from_the_first_line() {
         assert_eq!(status_code(b"HTTP/1.1 200 OK\r\n\r\n"), Some(200));
         assert_eq!(status_code(b"HTTP/1.0 204 No Content\r\n"), Some(204));
-        assert_eq!(status_code(b"HTTP/1.1 500 Internal Server Error\r\n"), Some(500));
+        assert_eq!(
+            status_code(b"HTTP/1.1 500 Internal Server Error\r\n"),
+            Some(500)
+        );
     }
 
     #[test]

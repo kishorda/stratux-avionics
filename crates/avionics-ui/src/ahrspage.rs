@@ -132,8 +132,17 @@ pub fn draw(
                 .attitude()
                 .expect("classify returned Attitude");
             draw_horizon(
-                ui, canvas, cx, cy, half_h, horizon_left, horizon_right, top,
-                bottom - heading_band, pitch as f32, roll as f32,
+                ui,
+                canvas,
+                cx,
+                cy,
+                half_h,
+                horizon_left,
+                horizon_right,
+                top,
+                bottom - heading_band,
+                pitch as f32,
+                roll as f32,
             );
             draw_roll_scale(ui, canvas, cx, cy, half_h, roll as f32);
             draw_aircraft_symbol(ui, canvas, cx, cy, half_h);
@@ -238,7 +247,10 @@ fn draw_heading(ui: &Ui, canvas: &mut Canvas, state: &AppState, cx: f32, top: f3
     let mut boxed = Path::new();
     boxed.rect(cx - w * 0.5, cy - h * 0.5, w, h);
     canvas.fill_path(&boxed, &Paint::color(Color::rgba(0, 0, 0, 235)));
-    canvas.stroke_path(&boxed, &Paint::color(theme.text_primary).with_line_width(1.4));
+    canvas.stroke_path(
+        &boxed,
+        &Paint::color(theme.text_primary).with_line_width(1.4),
+    );
 
     let mut value = Paint::color(theme.text_primary);
     value.set_font(&[ui.font()]);
@@ -446,14 +458,7 @@ fn draw_aircraft_symbol(ui: &Ui, canvas: &mut Canvas, cx: f32, cy: f32, radius: 
 }
 
 /// Slip/skid ball below the instrument.
-fn draw_slip_skid(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    state: &AppState,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-) {
+fn draw_slip_skid(ui: &Ui, canvas: &mut Canvas, state: &AppState, cx: f32, cy: f32, radius: f32) {
     let theme = &ui.theme;
     let y = cy + radius * 0.78;
     let half = radius * 0.22;
@@ -464,7 +469,10 @@ fn draw_slip_skid(
     cage.line_to(cx - half, y + ball_r * 1.6);
     cage.move_to(cx + half, y - ball_r * 1.6);
     cage.line_to(cx + half, y + ball_r * 1.6);
-    canvas.stroke_path(&cage, &Paint::color(theme.text_secondary).with_line_width(1.5));
+    canvas.stroke_path(
+        &cage,
+        &Paint::color(theme.text_secondary).with_line_width(1.5),
+    );
 
     let Some(slip) = state.ownship.ahrs.slip_skid_deg else {
         return;
@@ -477,14 +485,7 @@ fn draw_slip_skid(
 }
 
 /// The failure flag. Deliberately loud, and deliberately instead of — never on top of — a horizon.
-fn draw_failure(
-    ui: &Ui,
-    canvas: &mut Canvas,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    failure: AhrsFailure,
-) {
+fn draw_failure(ui: &Ui, canvas: &mut Canvas, cx: f32, cy: f32, radius: f32, failure: AhrsFailure) {
     let theme = &ui.theme;
 
     let mut disc = Path::new();
@@ -705,7 +706,10 @@ mod tests {
             received: Some(now - Duration::from_millis(1500)),
             ..Default::default()
         });
-        assert_eq!(classify(&state, now), AhrsRender::Failed(AhrsFailure::Stale));
+        assert_eq!(
+            classify(&state, now),
+            AhrsRender::Failed(AhrsFailure::Stale)
+        );
     }
 
     #[test]
@@ -734,7 +738,6 @@ mod tests {
         });
         assert_eq!(classify(&state, now), AhrsRender::Attitude);
     }
-
 }
 
 #[cfg(test)]

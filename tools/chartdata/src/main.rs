@@ -19,8 +19,8 @@
 
 mod airports;
 mod airspace;
-mod faa;
 mod csvread;
+mod faa;
 mod format;
 mod simplify;
 
@@ -110,8 +110,7 @@ fn build(source: &Path, out: &Path) -> Result<()> {
 
     let airport_pages = pages_named(source, "airports-faa-")?;
     let runway_pages = pages_named(source, "runways-faa-")?;
-    let (airport_records, airport_stats) =
-        faa::parse(&airport_pages, &runway_pages, &frequencies)?;
+    let (airport_records, airport_stats) = faa::parse(&airport_pages, &runway_pages, &frequencies)?;
 
     println!(
         "    FAA US_Airport ({} pages)  {} features -> {} kept",
@@ -156,8 +155,7 @@ fn build(source: &Path, out: &Path) -> Result<()> {
         "        vertices: {} -> {} ({:.1}%) at {} m tolerance",
         airspace_stats.vertices_before,
         airspace_stats.vertices_after,
-        100.0 * airspace_stats.vertices_after as f64
-            / airspace_stats.vertices_before.max(1) as f64,
+        100.0 * airspace_stats.vertices_after as f64 / airspace_stats.vertices_before.max(1) as f64,
         simplify::TOLERANCE_M
     );
 
@@ -273,7 +271,16 @@ fn inspect(path: &Path) -> Result<()> {
     kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     let summary: Vec<String> = kinds
         .iter()
-        .map(|(k, n)| format!("{} {n}", if k.label().is_empty() { "OTHER" } else { k.label() }))
+        .map(|(k, n)| {
+            format!(
+                "{} {n}",
+                if k.label().is_empty() {
+                    "OTHER"
+                } else {
+                    k.label()
+                }
+            )
+        })
         .collect();
     println!("    frequencies: {}", summary.join(", "));
 
@@ -333,8 +340,8 @@ fn read(path: &Path) -> Result<String> {
 /// The FAA layer's own last-edit date, in days since the epoch.
 fn effective_days(meta: &Path) -> Result<u32> {
     let text = read(meta)?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("parsing {}", meta.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", meta.display()))?;
     let ms = value
         .get("editingInfo")
         .and_then(|e| e.get("dataLastEditDate"))
