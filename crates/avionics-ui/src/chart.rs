@@ -433,6 +433,12 @@ pub struct Chart {
     freq_off: usize,
     string_off: usize,
     string_len: usize,
+    /// `(station, airport index)`, sorted by station.
+    ///
+    /// Built once at load because the alternative is a linear scan of 18,108 records per lookup,
+    /// and the weather page wants one lookup per report per frame. 2,335 entries — the airports
+    /// that actually have an ICAO code — so this is about 40 KB and a binary search.
+    by_station: Vec<(String, u32)>,
 }
 
 impl Chart {
@@ -447,7 +453,7 @@ impl Chart {
     /// the first sign of that is an airport drawn in the sea — which is a long way from the cause.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let header = Header::parse(&bytes)?;
-        Ok(Self {
+        let mut chart = Self {
             bytes,
             grid: header.grid,
             effective_days: header.effective_days,
@@ -462,7 +468,27 @@ impl Chart {
             freq_off: header.freq_off,
             string_off: header.string_off,
             string_len: header.string_len,
-        })
+            by_station: Vec::new(),
+        };
+
+        chart.by_station = (0..chart.airport_count as usize)
+            .filter_map(|i| chart.airport_at(i))
+            .filter(|a| !a.station().is_empty())
+            .map(|a| (a.station().to_string(), a.index))
+            .collect();
+        chart.by_station.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(chart)
+    }
+
+    /// The airport with this ICAO station identifier.
+    ///
+    /// The reverse of [`Airport::station`], for turning a METAR's `KMMU` back into a position.
+    pub fn airport_by_station(&self, station: &str) -> Option<Airport> {
+        let i = self
+            .by_station
+            .binary_search_by(|(s, _)| s.as_str().cmp(station))
+            .ok()?;
+        self.airport_at(self.by_station[i].1 as usize)
     }
 
     /// Days since the Unix epoch of the FAA layer's own last edit — the currency of the airspace,

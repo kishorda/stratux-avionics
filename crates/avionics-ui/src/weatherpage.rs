@@ -13,10 +13,10 @@ use std::time::Instant;
 
 use avionics_gfx::femtovg::{Align, Baseline, Paint, Path};
 use avionics_gfx::Canvas;
-use stratux_client::domain::{WeatherProduct, WeatherText};
+use stratux_client::domain::{LatLon, WeatherProduct, WeatherText};
 use stratux_client::AppState;
 
-use crate::{glossary, metar, Layout, Ui, ViewState};
+use crate::{glossary, metar, Chart, Layout, Ui, ViewState};
 
 /// Sort priority: the products a pilot reaches for first come first.
 fn priority(product: &WeatherProduct) -> u8 {
@@ -32,23 +32,96 @@ fn priority(product: &WeatherProduct) -> u8 {
     }
 }
 
-/// Ordered view of everything held, newest-relevant first within each product.
-pub fn ordered(state: &AppState) -> Vec<&WeatherText> {
+/// Ordered view of everything held: by product, then **nearest first**.
+///
+/// # Why not alphabetical
+///
+/// It was, and alphabetical is an arbitrary order to a pilot. With 33 reports on board over New
+/// York, `KMMU` — the field own-ship was sitting on — came *tenth*, behind Allentown, Bridgeport
+/// and Danbury, purely because of its spelling. The reports you want are the ones near you, and
+/// since the chart carries a position for every ICAO station the display can simply say so.
+///
+/// Reports whose station is not in the chart sort last rather than first: an unknown distance is
+/// not a near one.
+pub fn ordered<'a>(
+    state: &'a AppState,
+    chart: Option<&Chart>,
+    origin: Option<LatLon>,
+) -> Vec<&'a WeatherText> {
+    let distance = |item: &WeatherText| station_distance_nm(item, chart, origin);
+
     let mut items: Vec<&WeatherText> = state.weather.values().collect();
     items.sort_by(|a, b| {
+        let (da, db) = (distance(a), distance(b));
         priority(&a.product)
             .cmp(&priority(&b.product))
+            // `None` sorts after `Some` for Option, which is what "unknown is not near" wants.
+            .then_with(|| match (da, db) {
+                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
             .then_with(|| a.location.cmp(&b.location))
             .then_with(|| a.body.cmp(&b.body))
     });
     items
 }
 
+/// Distance from `origin` to a report's station, when both are known.
+pub fn station_distance_nm(
+    item: &WeatherText,
+    chart: Option<&Chart>,
+    origin: Option<LatLon>,
+) -> Option<f32> {
+    let origin = origin?;
+    let airport = chart?.airport_by_station(&item.location)?;
+    let north = (airport.position.lat - origin.lat) * 60.0;
+    let east = (airport.position.lon - origin.lon) * 60.0 * origin.lat.to_radians().cos().abs();
+    Some((north * north + east * east).sqrt() as f32)
+}
+
+/// Strip the leading product and station from a report body.
+///
+/// A row already names both in its heading, and the body then repeats them: `METAR KABE 041551Z
+/// 23003KT ...` under a heading that says `KABE METAR`. That is about eleven characters of the
+/// most valuable space on the line — the left edge, where the eye lands — spent saying something
+/// the reader has just read. The issue time stays: it is the one part of the prefix that is not
+/// already on the row.
+pub fn body_without_prefix<'a>(body: &'a str, location: &str) -> &'a str {
+    let mut rest = body.trim_start();
+    for prefix in ["METAR", "SPECI", "TAF", "PIREP", "AIRMET", "SIGMET"] {
+        if let Some(stripped) = rest.strip_prefix(prefix) {
+            if stripped.starts_with(' ') {
+                rest = stripped.trim_start();
+                break;
+            }
+        }
+    }
+    if !location.is_empty() {
+        if let Some(stripped) = rest.strip_prefix(location) {
+            if stripped.starts_with(' ') {
+                rest = stripped.trim_start();
+            }
+        }
+    }
+    rest
+}
+
 /// How many entries fit on screen, given the layout. Used for scrolling.
+/// Extra space after each entry.
+///
+/// Without it the heading and body lines are evenly spaced, so ten reports read as twenty
+/// undifferentiated lines rather than as ten things. It costs about one entry per page, which is
+/// a good trade now that the nearest report is first and the rest are rarely reached.
+pub fn entry_gap(ui: &Ui) -> f32 {
+    ui.theme.font_size_small * 0.42
+}
+
 pub fn rows_per_page(ui: &Ui, layout: &Layout) -> usize {
     let line = ui.theme.font_size_small * 1.35;
     let body = layout.height - layout.status_bar_height - layout.footer_height - line;
-    ((body / (line * 2.0)).floor() as usize).max(1)
+    ((body / (line * 2.0 + entry_gap(ui))).floor() as usize).max(1)
 }
 
 pub fn draw(
@@ -60,7 +133,7 @@ pub fn draw(
     layout: &Layout,
 ) {
     let theme = &ui.theme;
-    let items = ordered(state);
+    let items = ordered(state, ui.chart(), state.ownship.usable_position());
     let line = theme.font_size_small * 1.35;
     let per_page = rows_per_page(ui, layout);
 
@@ -138,12 +211,44 @@ pub fn draw(
         label.set_text_baseline(Baseline::Middle);
         label.set_text_align(Align::Left);
 
+        // The station leads, in the brightest colour on the row. It used to trail the product
+        // label — every row began with the word METAR, identical and eleven characters wide, so
+        // the eye landed on the one thing that was the same everywhere and had to travel to reach
+        // the one thing that was not.
         let heading = if item.location.is_empty() {
             item.product.label().to_string()
         } else {
-            format!("{} {}", item.product.label(), item.location)
+            item.location.clone()
         };
         let _ = canvas.fill_text(layout.content_left(), y, &heading, &label);
+
+        let mut x = layout.content_left()
+            + canvas
+                .measure_text(0.0, 0.0, &heading, &label)
+                .map(|m| m.width())
+                .unwrap_or(0.0)
+            + 9.0;
+
+        // Product and distance, both secondary: they say why the row is here and where it sits in
+        // the order, neither of which is what you are scanning for.
+        let mut aside = Paint::color(theme.text_dim);
+        aside.set_font(&[ui.font()]);
+        aside.set_font_size(theme.font_size_tag);
+        aside.set_text_baseline(Baseline::Middle);
+        aside.set_text_align(Align::Left);
+        if !item.location.is_empty() {
+            let mut note = item.product.label().to_string();
+            if let Some(nm) = station_distance_nm(item, ui.chart(), state.ownship.usable_position())
+            {
+                note.push_str(&format!("  {nm:.0} nm"));
+            }
+            let _ = canvas.fill_text(x, y, &note, &aside);
+            x += canvas
+                .measure_text(0.0, 0.0, &note, &aside)
+                .map(|m| m.width())
+                .unwrap_or(0.0)
+                + 9.0;
+        }
 
         // Flight category badge — METARs and SPECIs only.
         //
@@ -160,21 +265,12 @@ pub fn draw(
             .then(|| metar::summarise(&item.body).category)
             .flatten();
         if let Some(category) = category {
-            let heading_w = canvas
-                .measure_text(0.0, 0.0, &heading, &label)
-                .map(|m| m.width())
-                .unwrap_or(0.0);
             let mut badge = Paint::color(category.colour(&ui.theme));
             badge.set_font(&[ui.font()]);
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);
             badge.set_text_align(Align::Left);
-            let _ = canvas.fill_text(
-                layout.content_left() + heading_w + 10.0,
-                y,
-                category.label(),
-                &badge,
-            );
+            let _ = canvas.fill_text(x, y, category.label(), &badge);
         }
 
         // Age on the right, coloured once it is old enough to matter.
@@ -203,9 +299,12 @@ pub fn draw(
 
         let indent = layout.content_left() + theme.font_size_small * 1.2;
         let available = layout.content_right() - indent;
-        draw_body_tokens(ui, canvas, &item.body, &mut body, indent, y, available);
+        // Without the prefix the heading already carries — see `body_without_prefix`.
+        let shown = body_without_prefix(&item.body, &item.location);
+        draw_body_tokens(ui, canvas, shown, &mut body, indent, y, available);
 
         y += line;
+        y += entry_gap(ui);
         if y > layout.height - layout.footer_height {
             break;
         }
@@ -605,6 +704,51 @@ fn draw_wrapped_tokens(
         x += width + space;
     }
     y + line
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    #[test]
+    fn a_body_does_not_repeat_what_the_heading_already_says() {
+        // Every row used to begin `METAR KABE` under a heading that said `KABE METAR` — about
+        // eleven characters of the left edge, where the eye lands, spent on a repeat.
+        assert_eq!(
+            body_without_prefix("METAR KABE 041551Z 23003KT 10SM CLR", "KABE"),
+            "041551Z 23003KT 10SM CLR"
+        );
+        assert_eq!(
+            body_without_prefix("TAF KEWR 041624Z 0416/0518 10005KT", "KEWR"),
+            "041624Z 0416/0518 10005KT"
+        );
+        // The issue time stays: it is the one part of the prefix the row does not already carry.
+        assert!(body_without_prefix("METAR KMMU 041545Z CLR", "KMMU").starts_with("041545Z"));
+    }
+
+    #[test]
+    fn a_body_that_does_not_start_with_the_prefix_is_left_alone() {
+        // Never chop at a boundary that is not there. A SPECI under a METAR heading, a report with
+        // no station, a station that merely shares a prefix.
+        assert_eq!(body_without_prefix("041551Z 23003KT", "KABE"), "041551Z 23003KT");
+        assert_eq!(body_without_prefix("METARX KABE 1Z", "KABE"), "METARX KABE 1Z");
+        assert_eq!(body_without_prefix("METAR KABEX 1Z", "KABE"), "KABEX 1Z");
+        assert_eq!(body_without_prefix("", "KABE"), "");
+        assert_eq!(body_without_prefix("METAR", "KABE"), "METAR");
+    }
+
+    #[test]
+    fn a_page_holds_fewer_entries_once_they_are_spaced_apart() {
+        // The gap is what makes two lines read as one report. It costs about an entry a page,
+        // which is affordable precisely because the nearest report is now first.
+        let ui_gap: f32 = 14.0 * 0.42;
+        let line: f32 = 14.0 * 1.35;
+        let body: f32 = 480.0 - 36.4 - 30.6 - line;
+        let without = (body / (line * 2.0)).floor() as usize;
+        let with = (body / (line * 2.0 + ui_gap)).floor() as usize;
+        assert!(with < without, "the gap should cost something: {with} vs {without}");
+        assert!(without - with <= 2, "but not more than a couple of entries");
+    }
 }
 
 #[cfg(test)]

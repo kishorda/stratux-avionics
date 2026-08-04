@@ -82,7 +82,17 @@ far overhead.
 
 ### Weather text
 
-![FIS-B text page listing live METARs](docs/images/weather-raw.png)
+![FIS-B text page listing live METARs, nearest station first](docs/images/weather-raw.png)
+
+**Nearest station first**, which is the whole reason this page is readable. It used to sort
+alphabetically: with 33 reports on board over New York, `KMMU` — the field own-ship was sitting on
+— came *tenth*, behind Allentown, Bridgeport and Danbury, purely because of its spelling. The chart
+carries a position for every ICAO station, so the display sorts by distance and shows it.
+
+The station leads the row in the brightest colour on it. Every row used to begin with the word
+`METAR`, identical and eleven characters wide, so the eye landed on the one thing that was the same
+everywhere. The body no longer repeats the product and station either — the heading already says
+both, and that was eleven more characters of the left edge spent on a repeat.
 
 Real observations, pulled from aviationweather.gov moments before this was rendered. Newest first,
 each carrying **its own age** — delivery is opportunistic, so one station can be twenty minutes
@@ -353,7 +363,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **on the panel** — 18,108 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; all from the FAA's own layers on one AIRAC cycle, measured on the real VC4 under GLES 2.0 |
 
-386 tests passing, clippy clean.
+389 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
