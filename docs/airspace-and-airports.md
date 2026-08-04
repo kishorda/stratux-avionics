@@ -268,6 +268,56 @@ Wright-Patterson, Oceana and Vance to the 5 nm band. A 15,000 ft military runway
 conspicuous thing for miles and usually has controlled airspace stacked on it. The reason to draw
 it is not that you might land there.
 
+## Tapping airspace: numbers, not a verdict
+
+Tapping inside a boundary shows what is stacked over that point:
+
+```
+AIRSPACE                086°  10.7 nm
+D  TEB     SFC - 2500 ft
+B  JFK    1800 - 7000 ft
+```
+
+Lowest floor first, because that is the order you meet them climbing, and because the number a
+pilot wants from a stack of shelves is the bottom of the one above them. The airport wins a
+contested tap — it is the smaller, more specific target, and a symbol inside a Class D would
+otherwise be unreachable.
+
+### Why it does not say whether you are inside
+
+Because it cannot, and the measurement says so plainly. From the outdoor capture, sitting still at
+Morristown with a field elevation of 187 ft:
+
+| | samples | range |
+| --- | --- | --- |
+| `GPSAltitudeMSL` | 10,348 | 300 – 656 ft — **356 ft of scatter while stationary** |
+| `BaroPressureAltitude` | 18,000 | 310 – 319 ft, stable to ±5 ft |
+
+GPS averaged about 215 ft high against known field elevation. The pressure altitude is precise and
+is on the 29.92 datum, so it equals MSL only when the local altimeter setting happens to be 29.92 —
+on a real day that is a ±500 ft offset. Airspace floors are MSL, and legal compliance is your
+altimeter on local QNH, which this box does not have.
+
+So the card prints the floor and the ceiling and lets the pilot cross-check against the instrument
+that is certified for it. A green "you are clear" would be the most confidently wrong thing this
+display could say.
+
+### Why not dim the shelves that do not apply
+
+That was the plan, and measuring killed it. Counting the volumes in view whose vertical band
+contains own-ship, with a 500 ft buffer:
+
+| Location | altitude | dimmed |
+| --- | --- | --- |
+| Morristown | 2,000 ft | **6%** |
+| Morristown | 3,500 ft | 18% |
+| Broomfield | 7,500 ft | 15% |
+
+In the band a light aircraft actually flies, nearly everything nearby is vertically relevant —
+Class D floors are at the surface and their ceilings are above you, and the Class B shelves stack
+right through your operating range. The machinery would have removed almost no ink, using an
+altitude that cannot support the claim.
+
 ## Tapping an airport, and the rule it bends
 
 The plan-view body was **deliberately inert**. Before the soft keys existed, a tap anywhere in it

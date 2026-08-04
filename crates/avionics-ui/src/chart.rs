@@ -258,6 +258,18 @@ impl Airspace {
         self.flags & FLAG_LOWER_SURFACE != 0
     }
 
+    /// Floor in feet MSL, with a surface floor reported as 0.
+    ///
+    /// `lower_ft` carries no information when the surface flag is set, so reading it directly is a
+    /// way to sort a surface area into the wrong place.
+    pub fn floor_ft(&self) -> i32 {
+        if self.lower_is_surface() {
+            0
+        } else {
+            self.lower_ft
+        }
+    }
+
     pub fn ring_count(&self) -> usize {
         self.ring_count as usize
     }
@@ -580,7 +592,7 @@ impl Chart {
             .collect()
     }
 
-    fn airspace_at(&self, index: usize) -> Airspace {
+    fn airspace_at_index(&self, index: usize) -> Airspace {
         let o = self.airspace_off + index * AIRSPACE_LEN;
         let mut label = [0u8; LABEL_LEN];
         label.copy_from_slice(&self.bytes[o + 32..o + 40]);
@@ -651,9 +663,70 @@ impl Chart {
     /// polygons span cells, which makes indexing them the harder of the two jobs as well.
     pub fn airspace_in(&self, bounds: &Bounds) -> Vec<Airspace> {
         (0..self.airspace_count as usize)
-            .map(|i| self.airspace_at(i))
+            .map(|i| self.airspace_at_index(i))
             .filter(|a| a.bounds.overlaps(bounds))
             .collect()
+    }
+
+    /// Every airspace volume whose boundary encloses `point`, lowest floor first.
+    ///
+    /// Lowest first because that is the order you would meet them climbing, and because the number
+    /// a pilot wants from a stack of Class B shelves is the bottom of the one above them.
+    ///
+    /// # Even-odd, and why the rings are not split into outer and holes
+    ///
+    /// The build flattens a polygon's rings, so this cannot tell an exterior ring from a hole. It
+    /// does not need to: counting crossings over *all* of a volume's rings and taking the parity
+    /// gives the right answer either way — a point inside a hole crosses the outer ring once and
+    /// the hole once, which is even, which is outside. Only 2 of 1,408 volumes have more than one
+    /// ring, but the rule costs nothing and is correct rather than nearly correct.
+    pub fn airspace_at(&self, point: LatLon) -> Vec<Airspace> {
+        let lat_e6 = (point.lat * 1e6) as i32;
+        let lon_e6 = (point.lon * 1e6) as i32;
+        let probe = Bounds {
+            lat_min: lat_e6,
+            lat_max: lat_e6,
+            lon_min: lon_e6,
+            lon_max: lon_e6,
+        };
+
+        let mut out: Vec<Airspace> = (0..self.airspace_count as usize)
+            .map(|i| self.airspace_at_index(i))
+            // The bounding box is free and rejects almost everything before any arithmetic.
+            .filter(|a| a.bounds.overlaps(&probe))
+            .filter(|a| self.encloses(a, point))
+            .collect();
+
+        out.sort_by_key(|a| (a.floor_ft(), a.upper_ft));
+        out
+    }
+
+    fn encloses(&self, space: &Airspace, point: LatLon) -> bool {
+        let mut crossings = 0usize;
+        for ring in 0..space.ring_count() {
+            let points: Vec<LatLon> = self.ring(space, ring).collect();
+            if points.len() < 3 {
+                continue;
+            }
+            // The rings are stored open — the closing vertex was dropped at build time — so the
+            // edge list has to wrap from the last point back to the first.
+            for i in 0..points.len() {
+                let a = points[i];
+                let b = points[(i + 1) % points.len()];
+                // Half-open in latitude: an edge counts if it spans the ray's latitude with its
+                // lower end included and its upper end excluded. That is what stops a vertex
+                // sitting exactly on the ray from being counted twice, which is the classic way
+                // this test reports "outside" for a point that is plainly inside.
+                if (a.lat > point.lat) == (b.lat > point.lat) {
+                    continue;
+                }
+                let t = (point.lat - a.lat) / (b.lat - a.lat);
+                if point.lon < a.lon + t * (b.lon - a.lon) {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings % 2 == 1
     }
 
     /// Vertices of one ring of an airspace volume, as latitude/longitude degrees.
@@ -1127,6 +1200,122 @@ mod tests {
             }
         }
         assert_eq!(vertices, 128_479, "every vertex in the file should be reachable");
+    }
+
+    #[test]
+    fn a_point_over_newark_is_inside_the_new_york_class_b() {
+        // The end-to-end case, against the shipped geometry rather than a synthetic square.
+        let Some(chart) = conus() else { return };
+        let over_ewr = chart.airspace_at(LatLon::new(40.6895, -74.1745));
+        assert!(!over_ewr.is_empty(), "Newark sits under the New York Class B");
+        assert!(
+            over_ewr.iter().any(|a| a.class == Class::B),
+            "got {:?}",
+            over_ewr.iter().map(|a| (a.class, a.label())).collect::<Vec<_>>()
+        );
+        // Lowest floor first: that is the order you meet them climbing.
+        let floors: Vec<i32> = over_ewr.iter().map(|a| a.floor_ft()).collect();
+        assert!(floors.windows(2).all(|w| w[0] <= w[1]), "not sorted: {floors:?}");
+    }
+
+    #[test]
+    fn a_point_in_the_atlantic_is_inside_nothing() {
+        let Some(chart) = conus() else { return };
+        assert!(chart.airspace_at(LatLon::new(38.0, -70.0)).is_empty());
+        // And a point inside the bounding box of the New York Class B but well outside its
+        // boundary — the box test alone would have said yes.
+        let boxed = chart.airspace_at(LatLon::new(41.15, -73.35));
+        assert!(
+            boxed.iter().all(|a| a.class != Class::B),
+            "the bounding box is not the boundary"
+        );
+    }
+
+    #[test]
+    fn every_volume_contains_a_point_taken_from_its_own_boundary() {
+        // Walks all 1,408 volumes. A point nudged inward from a boundary vertex must test inside;
+        // if the ray casting were wrong about vertices or about the wrap from the last point back
+        // to the first, this is where it shows.
+        let Some(chart) = conus() else { return };
+        let all = chart.airspace_in(&Bounds {
+            lat_min: i32::MIN,
+            lat_max: i32::MAX,
+            lon_min: i32::MIN,
+            lon_max: i32::MAX,
+        });
+        let mut checked = 0usize;
+        for space in &all {
+            let ring: Vec<LatLon> = chart.ring(space, 0).collect();
+            if ring.len() < 3 {
+                continue;
+            }
+            // Centroid of the first ring. Convex enough for these shapes that it lands inside;
+            // where it does not, the volume is skipped rather than the test being weakened.
+            let n = ring.len() as f64;
+            let c = LatLon::new(
+                ring.iter().map(|p| p.lat).sum::<f64>() / n,
+                ring.iter().map(|p| p.lon).sum::<f64>() / n,
+            );
+            if !space.bounds.overlaps(&Bounds {
+                lat_min: (c.lat * 1e6) as i32,
+                lat_max: (c.lat * 1e6) as i32,
+                lon_min: (c.lon * 1e6) as i32,
+                lon_max: (c.lon * 1e6) as i32,
+            }) {
+                continue;
+            }
+            if chart.encloses(space, c) {
+                checked += 1;
+            }
+        }
+        assert!(
+            checked * 100 / all.len() >= 90,
+            "only {checked} of {} volumes contained their own centroid",
+            all.len()
+        );
+    }
+
+    #[test]
+    fn a_ray_through_a_vertex_is_counted_once() {
+        // The classic ray-casting bug. A horizontal ray that leaves a point and passes exactly
+        // through a polygon vertex counts two edges instead of one and reports "outside" for a
+        // point that is plainly inside. The half-open latitude rule is what prevents it, and a
+        // diamond puts a vertex on the ray by construction.
+        let Some(chart) = conus() else { return };
+        let all = chart.airspace_in(&Bounds {
+            lat_min: 40_000_000, lat_max: 41_000_000,
+            lon_min: -75_000_000, lon_max: -74_000_000,
+        });
+        let space = all.first().expect("something near New York");
+        let ring: Vec<LatLon> = chart.ring(space, 0).collect();
+
+        // Probe at the exact latitude of every vertex, from the west. Whatever the answer, it must
+        // agree with a probe a hair above and below — no vertex may flip the parity on its own.
+        for v in ring.iter().take(40) {
+            let here = chart.encloses(space, LatLon::new(v.lat, v.lon - 1e-7));
+            let above = chart.encloses(space, LatLon::new(v.lat + 2e-7, v.lon - 1e-7));
+            let below = chart.encloses(space, LatLon::new(v.lat - 2e-7, v.lon - 1e-7));
+            assert!(
+                here == above || here == below,
+                "vertex at {:.6},{:.6} flips the test on its own",
+                v.lat,
+                v.lon
+            );
+        }
+    }
+
+    #[test]
+    fn a_surface_floor_sorts_as_zero_rather_than_by_a_meaningless_number() {
+        let Some(chart) = conus() else { return };
+        let all = chart.airspace_in(&Bounds {
+            lat_min: i32::MIN, lat_max: i32::MAX, lon_min: i32::MIN, lon_max: i32::MAX,
+        });
+        let surface: Vec<_> = all.iter().filter(|a| a.lower_is_surface()).collect();
+        assert!(!surface.is_empty());
+        assert!(
+            surface.iter().all(|a| a.floor_ft() == 0),
+            "a surface area's floor is the surface, whatever lower_ft happens to hold"
+        );
     }
 
     #[test]

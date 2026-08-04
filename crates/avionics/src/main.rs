@@ -64,8 +64,10 @@ View
   --decode             start with the weather report expanded
   --no-underlay        don't draw the NEXRAD precipitation underlay
   --map LAYERS         map layer: off, apt, all             [default: apt]
-  --inspect IDENT      open the airport card for IDENT, e.g. --inspect BJC
-                       (for screenshots; on the panel this is a tap)
+  --inspect WHAT       open the inspect card: an airport identifier such as
+                       --inspect BJC, or a position such as --inspect 40.7,-74.2
+                       to show the airspace over it. For screenshots; on the
+                       panel this is a tap.
   --chart FILE         airport and airspace file
                        [default: conus.chart beside the binary, then the repo copy]
 
@@ -144,13 +146,31 @@ fn open_inspect_card(ui: &Ui, view: &mut ViewState, ident: &str) {
         tracing::warn!(ident, "--inspect needs a chart file");
         return;
     };
+
+    // A position rather than an identifier: show what airspace is stacked over it.
+    if let Some((lat, lon)) = ident.split_once(',') {
+        if let (Ok(lat), Ok(lon)) = (lat.trim().parse::<f64>(), lon.trim().parse::<f64>()) {
+            let at = stratux_client::domain::LatLon::new(lat, lon);
+            let found = chart.airspace_at(at).len();
+            if found == 0 {
+                tracing::warn!(lat, lon, "no airspace over that position");
+                return;
+            }
+            view.inspect = Some(avionics_ui::Inspect {
+                subject: avionics_ui::Inspected::Airspace(at),
+                opened: Instant::now(),
+            });
+            tracing::info!(lat, lon, volumes = found, "airspace card open");
+            return;
+        }
+    }
     for index in 0..chart.airport_count() {
         let Some(airport) = chart.airport_at(index) else {
             continue;
         };
         if airport.label() == ident {
             view.inspect = Some(avionics_ui::Inspect {
-                airport: airport.index,
+                subject: avionics_ui::Inspected::Airport(airport.index),
                 opened: Instant::now(),
             });
             tracing::info!(ident, name = chart.name(&airport), "inspect card open");

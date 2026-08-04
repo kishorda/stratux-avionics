@@ -160,7 +160,14 @@ one lookup. What it needed was the chart to carry the **ICAO** identifier: METAR
 and the symbol says `MMU`, and deriving one from the other by prepending `K` is right most of the
 time and silently wrong sometimes — which here means showing another airport's weather.
 
-**This is the only thing the plan-view body responds to**, and it was inert on purpose: a hand
+Tapping **inside an airspace boundary** shows what is stacked over that point instead — `D TEB
+SFC - 2500 ft`, `B JFK 1800 - 7000 ft`, lowest floor first, which is the order you meet them
+climbing. It prints the numbers and never says whether you are inside one: own-ship altitude comes
+from GPS, which scattered 356 ft while sitting still during the outdoor capture, or from a pressure
+sensor on the 29.92 datum. Airspace floors are MSL and compliance is your altimeter on local QNH,
+which this box does not have. The card gives you the number to check against it.
+
+**Tapping is the only thing the plan-view body responds to**, and it was inert on purpose: a hand
 steadying itself against the panel in turbulence must not change the range or the heading reference.
 A card changes no selection, hides no traffic, needs a tap within 18 px of a symbol to open, is
 dismissed by any next tap, and lapses by itself after 20 seconds. The reasoning is in
@@ -346,7 +353,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **on the panel** — 18,108 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; all from the FAA's own layers on one AIRAC cycle, measured on the real VC4 under GLES 2.0 |
 
-374 tests passing, clippy clean.
+386 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a

@@ -72,6 +72,9 @@ const CATEGORY_COLUMN_PX: f32 = 40.0;
 /// Separator between frequency entries on the card.
 const FREQ_SEPARATOR: &str = "  ";
 
+/// Where an airspace row's text starts, past the single-letter class.
+const CLASS_COLUMN_PX: f32 = 18.0;
+
 /// Baseline of each card row, from the top of the card. Named rather than written twice, so the
 /// layout test cannot drift away from what the drawing actually does.
 const CARD_ROWS: [f32; 5] = [16.0, 35.0, 53.0, 71.0, 90.0];
@@ -405,9 +408,137 @@ pub fn draw_inspect(
     let (Some(chart), Some(inspect)) = (ui.chart(), view.inspect) else {
         return;
     };
-    let Some(airport) = chart.airport_at(inspect.airport as usize) else {
+    match inspect.subject {
+        crate::Inspected::Airport(index) => {
+            let Some(airport) = chart.airport_at(index as usize) else {
+                return;
+            };
+            draw_airport_card(ui, canvas, chart, state, &airport, layout, projection, now);
+        }
+        crate::Inspected::Airspace(at) => {
+            draw_airspace_card(ui, canvas, chart, at, layout, projection);
+        }
+    }
+}
+
+/// The airspace over a tapped point: what is stacked there and where each layer starts and stops.
+///
+/// # Why this shows numbers and not a verdict
+///
+/// The display cannot say whether you are inside a shelf. Own-ship altitude comes from GPS, which
+/// scattered 356 ft while sitting still on the ground during the outdoor capture, or from a
+/// pressure sensor on the 29.92 datum, which differs from MSL by whatever the local altimeter
+/// setting is. Airspace floors are MSL and legal compliance is your altimeter on local QNH, which
+/// this box does not have.
+///
+/// So it prints the floor and the ceiling, the way a sectional does, and the pilot cross-checks
+/// against the instrument that is actually certified for it. A green "you are clear" would be the
+/// most confidently wrong thing this display could say.
+fn draw_airspace_card(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    chart: &Chart,
+    at: LatLon,
+    layout: &Layout,
+    projection: Option<&Projection>,
+) {
+    let volumes = chart.airspace_at(at);
+    if volumes.is_empty() {
         return;
+    }
+    let theme = &ui.theme;
+
+    let shown = volumes.len().min(CARD_ROWS.len() - 1);
+    let width = CARD_W;
+    let height = CARD_ROWS[shown] + 10.0;
+    let x0 = layout.content_left();
+    let y0 = layout.footer_y0() - layout.margin - height;
+    card_frame(ui, canvas, x0, y0, width, height);
+
+    let pad = 7.0;
+    let mut title = Paint::color(theme.text_primary);
+    title.set_font(&[ui.font()]);
+    title.set_font_size(theme.font_size_normal);
+    title.set_text_baseline(Baseline::Middle);
+    title.set_text_align(Align::Left);
+    let _ = canvas.fill_text(x0 + pad, y0 + CARD_ROWS[0], "AIRSPACE", &title);
+
+    if let Some(projection) = projection {
+        let (range, bearing) = projection.range_bearing(at);
+        let mut right = Paint::color(theme.text_secondary);
+        right.set_font(&[ui.font()]);
+        right.set_font_size(theme.font_size_small);
+        right.set_text_baseline(Baseline::Middle);
+        right.set_text_align(Align::Right);
+        let _ = canvas.fill_text(
+            x0 + width - pad,
+            y0 + CARD_ROWS[0],
+            format!("{bearing:03.0}\u{00B0}  {range:.1} nm"),
+            &right,
+        );
+    }
+
+    // Lowest floor first, which is the order you would meet them climbing.
+    for (row, space) in volumes.iter().take(shown).enumerate() {
+        let mut class = Paint::color(match space.class {
+            chart::Class::B => theme.airspace_b,
+            chart::Class::C => theme.airspace_c,
+            chart::Class::D => theme.airspace_d,
+        });
+        class.set_font(&[ui.font()]);
+        class.set_font_size(theme.font_size_tag);
+        class.set_text_baseline(Baseline::Middle);
+        class.set_text_align(Align::Left);
+        let y = y0 + CARD_ROWS[row + 1];
+        let _ = canvas.fill_text(x0 + pad, y, space.class.label(), &class);
+
+        let mut body = Paint::color(theme.text_primary);
+        body.set_font(&[ui.font()]);
+        body.set_font_size(theme.font_size_tag);
+        body.set_text_baseline(Baseline::Middle);
+        body.set_text_align(Align::Left);
+        let _ = canvas.fill_text(
+            x0 + pad + CLASS_COLUMN_PX,
+            y,
+            format!("{:8} {}", space.label(), vertical_limits(space)),
+            &body,
+        );
+    }
+
+}
+
+/// `"SFC - 2500"`, `"1800 - 7000"` — feet MSL, the way a sectional states them.
+pub fn vertical_limits(space: &chart::Airspace) -> String {
+    let floor = if space.lower_is_surface() {
+        "SFC".to_string()
+    } else {
+        space.lower_ft.to_string()
     };
+    format!("{floor} - {} ft", space.upper_ft)
+}
+
+/// The card's background and border, shared by both subjects.
+fn card_frame(ui: &Ui, canvas: &mut Canvas, x0: f32, y0: f32, width: f32, height: f32) {
+    let mut background = Path::new();
+    background.rounded_rect(x0, y0, width, height, 3.0);
+    canvas.fill_path(&background, &Paint::color(ui.theme.bar_background));
+    canvas.stroke_path(
+        &background,
+        &Paint::color(ui.theme.text_dim).with_line_width(1.0),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_airport_card(
+    ui: &Ui,
+    canvas: &mut Canvas,
+    chart: &Chart,
+    state: &AppState,
+    airport: &chart::Airport,
+    layout: &Layout,
+    projection: Option<&Projection>,
+    now: Instant,
+) {
     let theme = &ui.theme;
 
     // The weather line only exists when there is weather, so the card grows rather than reserving
@@ -421,13 +552,7 @@ pub fn draw_inspect(
     let x0 = layout.content_left();
     let y0 = layout.footer_y0() - layout.margin - height;
 
-    let mut background = Path::new();
-    background.rounded_rect(x0, y0, width, height, 3.0);
-    canvas.fill_path(&background, &Paint::color(theme.bar_background));
-    canvas.stroke_path(
-        &background,
-        &Paint::color(theme.text_dim).with_line_width(1.0),
-    );
+    card_frame(ui, canvas, x0, y0, width, height);
 
     let pad = 7.0;
     let line = |canvas: &mut Canvas, row: f32, size: f32, colour, text: &str, right: bool| {
@@ -459,12 +584,12 @@ pub fn draw_inspect(
         CARD_ROWS[1],
         theme.font_size_tag,
         theme.text_secondary,
-        chart.name(&airport),
+        chart.name(airport),
         false,
     );
 
     // Elevation and the longest runway, with its designator when there is one.
-    let runways = chart.runways(&airport);
+    let runways = chart.runways(airport);
     let mut facts = format!("{} ft", airport.elevation_ft);
     if airport.runway_ft > 0 {
         facts.push_str(&format!("   {} ft", airport.runway_ft));
@@ -482,7 +607,7 @@ pub fn draw_inspect(
     // Anything the builder could not name is dropped rather than shown bare. A number with no
     // label on an avionics display invites tuning a radio to it without knowing who answers.
     let freqs: Vec<_> = chart
-        .frequencies(&airport)
+        .frequencies(airport)
         .into_iter()
         .filter(|f| !f.kind.label().is_empty())
         .collect();
@@ -1124,6 +1249,40 @@ mod tests {
         assert_eq!(format_visibility(3.0), "3");
         assert_eq!(format_visibility(0.5), "0.50");
         assert_eq!(format_visibility(1.75), "1.75");
+    }
+
+    #[test]
+    fn vertical_limits_read_the_way_a_sectional_states_them() {
+        // A surface floor says SFC, not the meaningless number `lower_ft` holds for those volumes.
+        let Some(chart) = conus() else { return };
+        let over_teb = chart.airspace_at(LatLon::new(40.79, -74.10));
+        assert!(over_teb.len() >= 2, "Teterboro sits under a Class B shelf");
+
+        let d = over_teb.iter().find(|a| a.class == chart::Class::D).expect("Class D");
+        assert!(d.lower_is_surface());
+        assert!(vertical_limits(d).starts_with("SFC - "), "{}", vertical_limits(d));
+
+        let b = over_teb.iter().find(|a| a.class == chart::Class::B).expect("Class B shelf");
+        assert!(!b.lower_is_surface());
+        assert_eq!(vertical_limits(b), format!("{} - {} ft", b.lower_ft, b.upper_ft));
+
+        // Lowest floor first — the order you meet them climbing, and the reason the surface area
+        // has to sort as 0 rather than by whatever `lower_ft` happens to contain.
+        assert_eq!(over_teb[0].class, chart::Class::D);
+    }
+
+    #[test]
+    fn the_airspace_card_never_promises_more_rows_than_it_has() {
+        // The card grows to fit what it shows, capped at the rows that exist. A stack deeper than
+        // the card is truncated rather than drawn past the border.
+        let l = layout();
+        for (shown, row) in CARD_ROWS.iter().enumerate().skip(1) {
+            let height = row + 10.0;
+            let y0 = l.footer_y0() - l.margin - height;
+            assert!(y0 > l.strip_y0(), "{shown} rows starts above the status bar");
+            assert!(y0 + height < l.footer_y0(), "{shown} rows overlaps the footer");
+            assert!(*row < height, "the last row is inside the card");
+        }
     }
 
     #[test]

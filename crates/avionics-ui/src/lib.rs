@@ -218,11 +218,23 @@ impl MapLayers {
 /// dismisses it; and it lapses on its own after [`INSPECT_TIMEOUT`] so it cannot be left covering
 /// the picture. What it costs is the corner of the screen it occupies, which is why it is placed
 /// away from own-ship and why it goes away by itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Inspect {
-    /// Index into the chart's airport table.
-    pub airport: u32,
+    pub subject: Inspected,
     pub opened: Instant,
+}
+
+/// What the card is showing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Inspected {
+    /// An airport, by index into the chart's airport table.
+    Airport(u32),
+    /// The airspace over a point.
+    ///
+    /// Stored as the position rather than as a list of volumes, so [`Inspect`] stays `Copy` and
+    /// small — and because re-running the point-in-polygon each frame is a few microseconds over
+    /// the handful of volumes whose bounding box contains the tap.
+    Airspace(stratux_client::domain::LatLon),
 }
 
 /// How long an inspect card stays up before retiring itself.

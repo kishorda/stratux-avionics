@@ -190,14 +190,28 @@ pub fn handle_tap(
             ui.chart(),
             crate::planview::make_projection(ui, state, view, now, layout),
         ) {
+            // Airport first: it is the smaller and more specific target, and a symbol sitting
+            // inside a Class D would otherwise be unreachable.
             if let Some(airport) =
                 crate::maplayer::hit_airport(chart, view, layout, &projection, x, y)
             {
                 view.inspect = Some(crate::Inspect {
-                    airport: airport.index,
+                    subject: crate::Inspected::Airport(airport.index),
                     opened: now,
                 });
                 return;
+            }
+            // Then the airspace under the tap, but only while it is being drawn — you cannot
+            // inspect what is not on screen.
+            if view.map_layers.shows_airspace() {
+                let at = projection.unproject(x, y);
+                if !chart.airspace_at(at).is_empty() {
+                    view.inspect = Some(crate::Inspect {
+                        subject: crate::Inspected::Airspace(at),
+                        opened: now,
+                    });
+                    return;
+                }
             }
         }
         // Missed everything, so a card that is up goes away. This is the dismiss gesture, and it

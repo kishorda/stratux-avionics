@@ -139,6 +139,27 @@ impl Projection {
     pub fn nm_to_px(&self, nm: f32) -> f32 {
         nm * self.px_per_nm
     }
+
+    /// Screen pixels back to a position — the inverse of [`Projection::project`].
+    ///
+    /// Needed because a tap arrives in pixels and the thing it might have landed on is a polygon
+    /// in degrees. Inverting here rather than projecting every boundary vertex into screen space
+    /// keeps the hit test in one coordinate system and costs one transform instead of thousands.
+    pub fn unproject(&self, x: f32, y: f32) -> LatLon {
+        let dx = (x - self.center_px.0) / self.px_per_nm;
+        // Screen y grows downward; `project_offset` negates north, so undo that first.
+        let dy = (self.center_px.1 - y) / self.px_per_nm;
+
+        // Un-rotate. `project_offset` applies [cos, -sin; sin, cos] to (east, north), so the
+        // inverse is the transpose.
+        let east = dx * self.cos_rot + dy * self.sin_rot;
+        let north = dy * self.cos_rot - dx * self.sin_rot;
+
+        LatLon::new(
+            self.origin.lat + north as f64 / NM_PER_DEG_LAT,
+            self.origin.lon + east as f64 / (NM_PER_DEG_LAT * self.cos_origin_lat),
+        )
+    }
 }
 
 /// Advance a position along a track. Shared by dead reckoning and by tests.
@@ -149,4 +170,61 @@ pub fn advance(from: LatLon, track_deg: f64, speed_kt: f64, seconds: f64) -> Lat
     let d_lon =
         distance_nm * heading.sin() / (NM_PER_DEG_LAT * from.lat.to_radians().cos().max(1e-6));
     LatLon::new(from.lat + d_lat, from.lon + d_lon)
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    fn probe(orientation: Orientation, track: Option<f32>) -> Projection {
+        Projection::new(
+            LatLon::new(40.7784, -74.3343),
+            (400.0, 240.0),
+            18.75,
+            orientation,
+            track,
+        )
+    }
+
+    #[test]
+    fn unproject_inverts_project_in_both_orientations() {
+        // A tap arrives in pixels and the polygon it might have hit is in degrees, so this has to
+        // be exact enough that a point near a boundary lands on the right side of it. Half a pixel
+        // at the tightest range is about 10 m; the tolerance below is far inside that.
+        for (orientation, track) in [
+            (Orientation::NorthUp, None),
+            (Orientation::NorthUp, Some(042.0)),
+            (Orientation::TrackUp, Some(042.0)),
+            (Orientation::TrackUp, Some(287.0)),
+            (Orientation::TrackUp, None),
+        ] {
+            let p = probe(orientation, track);
+            for (x, y) in [(400.0, 240.0), (120.0, 90.0), (700.0, 430.0), (401.5, 239.5)] {
+                let back = p.project(p.unproject(x, y));
+                assert!(
+                    (back.0 - x).abs() < 0.01 && (back.1 - y).abs() < 0.01,
+                    "{orientation:?} track {track:?}: ({x}, {y}) -> ({}, {})",
+                    back.0,
+                    back.1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unprojecting_the_centre_gives_own_ship() {
+        let p = probe(Orientation::TrackUp, Some(200.0));
+        let at = p.unproject(400.0, 240.0);
+        assert!((at.lat - p.origin().lat).abs() < 1e-9);
+        assert!((at.lon - p.origin().lon).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_point_above_the_centre_is_north_in_north_up() {
+        let p = probe(Orientation::NorthUp, None);
+        let above = p.unproject(400.0, 240.0 - 18.75); // one nautical mile up the screen
+        assert!(above.lat > p.origin().lat, "up the screen should be north");
+        assert!((above.lon - p.origin().lon).abs() < 1e-9, "and not east or west");
+        assert!(((above.lat - p.origin().lat) * 60.0 - 1.0).abs() < 1e-6, "one nm");
+    }
 }
