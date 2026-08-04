@@ -830,11 +830,18 @@ mod tests {
                 names += 1;
             }
             for f in chart.frequencies(&airport) {
+                // Everything in the file is tunable on the radios a light aircraft carries: the
+                // VHF comm band, plus ATIS and AWOS on a navaid voice channel below it. Military
+                // UHF is filtered out at build time — see `tunable` in the builder.
+                let comm = (118_000..=136_975).contains(&f.khz);
+                let navaid_voice = (108_000..=117_975).contains(&f.khz)
+                    && matches!(f.kind, FreqKind::Atis | FreqKind::Awos);
                 assert!(
-                    (50_000..=400_000).contains(&f.khz),
-                    "{} has {} kHz",
+                    comm || navaid_voice,
+                    "{} has {} kHz as {:?}, which no radio here can tune",
                     airport.label(),
-                    f.khz
+                    f.khz,
+                    f.kind
                 );
                 freqs += 1;
             }
@@ -843,7 +850,7 @@ mod tests {
                 runways += 1;
             }
         }
-        assert_eq!(freqs, 11_185, "every frequency in the file should be reachable");
+        assert_eq!(freqs, 10_847, "every frequency in the file should be reachable");
         assert_eq!(runways, 14_926, "every runway orientation should be reachable");
         assert_eq!(names, 18_108, "every airport should carry a name");
     }

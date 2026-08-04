@@ -43,11 +43,11 @@ pub fn frequency_index(
         let Ok(mhz) = field(row, c_mhz).trim().parse::<f64>() else {
             continue;
         };
-        if !(50.0..=400.0).contains(&mhz) {
-            continue;
-        }
         let khz = (mhz * 1000.0).round() as u32;
         let kind = FreqKind::parse(field(row, c_type));
+        if !tunable(khz, kind) {
+            continue;
+        }
         let ident = field(row, c_airport);
 
         let mut keys = vec![ident.to_string()];
@@ -84,6 +84,24 @@ pub fn frequency_index(
     Ok(out)
 }
 
+
+/// Whether a light aircraft could actually tune this.
+///
+/// The VHF communication band is 118.000–136.975 and that is the whole of what a civil comm radio
+/// reaches. The source also carries military frequencies — Washington National's tower on 257.600,
+/// Fort Rucker's ground on 357.150, Seymour Johnson's on 138.100 — which are real and untunable,
+/// and printing `TWR 257.600` on the card says you could call the tower on it.
+///
+/// The exception is deliberate and goes the other way: **ATIS and AWOS below the comm band are
+/// kept**, because they are broadcast on a co-located navaid's voice channel and a pilot tunes
+/// them on the NAV radio. 74 airports publish one that way, and dropping them to tidy up the band
+/// check would have thrown away working information.
+fn tunable(khz: u32, kind: FreqKind) -> bool {
+    const COMM: std::ops::RangeInclusive<u32> = 118_000..=136_975;
+    const NAVAID_VOICE: std::ops::RangeInclusive<u32> = 108_000..=117_975;
+    COMM.contains(&khz)
+        || (NAVAID_VOICE.contains(&khz) && matches!(kind, FreqKind::Atis | FreqKind::Awos))
+}
 
 /// `ident` -> `local_code` for every US row, sorted for binary search.
 fn ident_aliases(airports_csv: &str) -> Result<Vec<(String, String)>> {
@@ -164,6 +182,41 @@ local_code,home_link,wikipedia_link,keywords\n";
         let i = index.binary_search_by(|(id, _)| id.as_str().cmp("AAA")).unwrap();
         assert_eq!(index[i].1.len(), 1);
         assert_eq!(index[i].1[0].kind, FreqKind::Ctaf);
+    }
+
+    #[test]
+    fn frequencies_a_light_aircraft_cannot_tune_are_dropped() {
+        // Real, and untunable on a civil comm radio. "TWR 257.600" at Washington National reads as
+        // a number you could call the tower on.
+        for (khz, kind) in [
+            (257_600, FreqKind::Tower),   // DCA, military UHF
+            (357_150, FreqKind::Ground),  // Fort Rucker
+            (138_100, FreqKind::Ground),  // Seymour Johnson, military VHF
+            (322_100, FreqKind::Ctaf),
+            (199_250, FreqKind::Advisory),
+        ] {
+            assert!(!tunable(khz, kind), "{khz} kHz should be dropped");
+        }
+        // The comm band itself, and its edges.
+        for khz in [118_000, 121_975, 136_975] {
+            assert!(tunable(khz, FreqKind::Tower), "{khz} kHz is in the comm band");
+        }
+        assert!(!tunable(117_975, FreqKind::Tower), "just below the comm band");
+        assert!(!tunable(137_000, FreqKind::Tower), "just above it");
+    }
+
+    #[test]
+    fn atis_and_awos_on_a_navaid_voice_channel_are_kept() {
+        // 74 airports broadcast one below the comm band, on a co-located VOR's voice channel, and
+        // a pilot tunes those on the NAV radio. A tidy band check would have thrown them away.
+        assert!(tunable(108_200, FreqKind::Awos));
+        assert!(tunable(109_000, FreqKind::Atis));
+        assert!(tunable(117_975, FreqKind::Awos));
+        // But only those two kinds: a tower does not live down there.
+        assert!(!tunable(108_200, FreqKind::Tower));
+        assert!(!tunable(108_200, FreqKind::Ctaf));
+        // And not below the navaid band either.
+        assert!(!tunable(107_900, FreqKind::Awos));
     }
 
     #[test]
