@@ -217,9 +217,19 @@ measurement credited it with.
 | Tier | What | Population | Drawn at |
 | --- | --- | --- | --- |
 | 0 | large + medium airports | 821 | every range |
-| 1 | small airports, hard runway ≥ 3000 ft | 3,155 | 20 nm and in |
-| 2 | remaining fixed-wing + seaplane bases | 11,452 | 5 nm and in |
+| 1 | small airports, hard runway ≥ 2500 ft | 3,588 | 20 nm and in |
+| 2 | remaining fixed-wing + seaplane bases | 9,617 | 5 nm and in |
 | 3 | heliports | 6,710 | never, by default |
+
+**The tier-1 threshold was 3000 ft and that was wrong.** Somerset (KSMQ) has a lit 2,739 ft asphalt
+runway, an AWOS and a CTAF — an ordinary field a light aircraft would divert to — and it missed the
+cut by 261 ft, so it only drew inside 5 nm and was reported as missing from the data altogether. It
+was never missing; it was decluttered.
+
+Moving to 2500 promotes 437 airports and costs **two extra symbols** in the busiest 20 nm view
+anywhere in the country, 14 to 16. Runway length is a crude proxy for "worth diverting to" in any
+case: the FAA's own airport layer carries `PRIVATEUSE` and `IAPEXISTS`, either of which would say
+it better.
 
 ## What each airport carries
 

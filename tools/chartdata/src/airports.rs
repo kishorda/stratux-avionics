@@ -26,9 +26,21 @@ use crate::format::{
 /// Canada and Mexico, which the FAA airspace layer already contributes enough of.
 const NON_CONUS: [&str; 3] = ["US-AK", "US-HI", "US-U-A"];
 
-/// A small airport needs at least this much hard runway to be drawn before the 5 nm ring. Roughly
-/// the point below which a field is not an alternate for most of what this display is fitted to.
-const PAVED_MIN_FT: u16 = 3000;
+/// A small airport needs at least this much hard runway to be drawn before the 5 nm ring.
+///
+/// **Was 3000, which was too high.** Somerset (KSMQ) has a lit 2,739 ft asphalt runway, an AWOS
+/// and a CTAF — an ordinary GA field a light aircraft would happily divert to — and it missed the
+/// old threshold by 261 ft, so it only appeared inside 5 nm and was reported as missing from the
+/// data entirely. It was not missing; it was decluttered.
+///
+/// 2500 is the round number below that. Measured across CONUS, moving from 3000 to 2500 promotes
+/// 437 airports and costs **two extra symbols** in the busiest 20 nm view anywhere in the country
+/// — 14 to 16. That is a very cheap way to stop hiding usable runways.
+///
+/// Length alone is a crude proxy for "worth diverting to". The FAA's own airport layer carries
+/// `PRIVATEUSE` and `IAPEXISTS`, either of which would be a better signal; see
+/// `docs/free-aviation-data.md`.
+const PAVED_MIN_FT: u16 = 2500;
 
 /// Surface codes that mean a hard runway. OurAirports surfaces are free text with many spellings —
 /// `ASPH`, `ASPH-G`, `Asphalt`, `CON`, `CONC`, `PEM` — so this matches on the prefix after
@@ -555,6 +567,12 @@ he_heading_degT,he_displaced_threshold_ft\n";
         let by = |l: &str| out.iter().find(|a| a.label == l).unwrap();
         assert_eq!(by("AAA").tier, Tier::Paved, "4200 ft of asphalt");
         assert_eq!(by("BBB").tier, Tier::Minor, "1800 ft is below the threshold");
+        // The case that moved the threshold: Somerset's 2,739 ft lit asphalt runway used to fall
+        // on the wrong side of it and the airport vanished beyond 5 nm.
+        assert!(
+            2739 >= PAVED_MIN_FT,
+            "a 2739 ft paved runway must reach the Paved tier"
+        );
         assert_eq!(by("CCC").tier, Tier::Minor, "turf is not a hard surface");
         assert_eq!(by("CCC").runway_ft, 0, "a soft runway contributes no length");
     }
