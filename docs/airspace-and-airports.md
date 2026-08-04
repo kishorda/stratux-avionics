@@ -68,6 +68,29 @@ and the CTAF at a small field is exactly what the FAA table is thinnest on. Both
 so carrying two sources costs nothing but the fetch. The two disagree about identifiers — the
 frequency file says `KMMU`, the FAA layer says `MMU` — so every airport is indexed under both.
 
+### Three things about the frequency table
+
+**Kilohertz, not megahertz.** 121.975 is a real 25 kHz channel, and stored as a float it formats as
+121.97 or 121.98 depending on which way it lands — one click off.
+
+**One radio is often listed twice.** At a non-towered field CTAF and UNICOM are usually the same
+number; at a towered one, so are CTAF and TWR. They collapse, and **tower wins over CTAF** even
+though CTAF sorts first for display: Rocky Mountain Metro publishes 118.6 under both names, and
+labelling a live tower frequency "CTAF" invites self-announcing on it.
+
+**Not every published frequency is one you can tune.** The source carries military UHF and VHF —
+Washington National's tower on 257.600, Fort Rucker's ground on 357.150, Seymour Johnson's on
+138.100 — all real, none reachable from a civil comm radio, and `TWR 257.600` on a card reads as a
+number you could call the tower on. Only 118.000–136.975 is kept.
+
+The exception runs the other way and is the more interesting half: **ATIS and AWOS below the comm
+band are kept**, because 74 airports broadcast them on a co-located navaid's voice channel and a
+pilot tunes those on the NAV radio. The first instinct was that anything under 118 MHz was a data
+error; it was not, and a tidy band check would have discarded working information.
+
+Anything the builder cannot name is carried but **not shown on the card**. A number with no label
+on an avionics display invites tuning a radio to it without knowing who answers.
+
 ### Airspace — FAA AIS
 
 ```
