@@ -176,22 +176,27 @@ fn plan_view(
 fn weather(ui: &Ui, canvas: &mut Canvas, view: &ViewState, layout: &Layout, total: usize) {
     let theme = &ui.theme;
     let y = baseline(layout);
-    let per_page = crate::weatherpage::rows_per_page(ui, layout);
+    let per_page = crate::weatherpage::rows_per_page(&ui.theme, layout);
 
-    // Name the soft keys, not the touch zones. The keys are the primary controls, and a hint that
-    // taught tapping the body would teach the habit the strips exist to remove.
-    let hint = if view.weather_decode {
-        "UP / DOWN for the next report"
+    // This hint used to name the soft keys and nothing else, on the grounds that teaching a body
+    // tap would teach the habit the strips exist to remove. That holds where a body tap is an
+    // accident waiting to happen — the plan view, where it would move the range. It does not hold
+    // for a row that opens the report it names: an aimed target with no affordance is one the
+    // pilot never finds, and the alternative is not "no gesture" but "a gesture nobody knows".
+    let hint = if total == 0 {
+        // Nothing on the page to tap. The body says why it is empty; a gesture hint under it would
+        // be instructions for something that is not there.
+        ""
+    } else if view.weather_decode {
+        "TAP to go back   |   UP / DOWN for the next report"
     } else if total > per_page {
         if view.weather_scroll + per_page >= total {
-            "DOWN wraps to the top"
+            "TAP a report to decode   |   DOWN wraps to the top"
         } else {
-            "UP / DOWN to scroll"
+            "TAP a report to decode   |   UP / DOWN to scroll"
         }
     } else {
-        // Nothing to scroll, and naming TFC would be teaching a hint for a key already visible and
-        // filled on the opposite edge.
-        ""
+        "TAP a report to decode"
     };
     let _ = canvas.fill_text(
         layout.margin,
@@ -248,7 +253,11 @@ mod tests {
         // The two problems this bar exists to fix: the footer text used to run the full width with
         // no bar under it, so it sat directly beneath the strips and read as part of them.
         let l = layout();
-        assert_eq!(l.footer_y0(), l.strip_y1(), "the strips must stop at the bar");
+        assert_eq!(
+            l.footer_y0(),
+            l.strip_y1(),
+            "the strips must stop at the bar"
+        );
         assert!(l.footer_y0() > l.strip_y0());
         assert!((l.footer_y0() + l.footer_height - l.height).abs() < 0.001);
     }
@@ -257,6 +266,9 @@ mod tests {
     fn text_sits_inside_the_bar() {
         let l = layout();
         let y = baseline(&l);
-        assert!(y > l.footer_y0() && y < l.height, "baseline {y} outside the bar");
+        assert!(
+            y > l.footer_y0() && y < l.height,
+            "baseline {y} outside the bar"
+        );
     }
 }

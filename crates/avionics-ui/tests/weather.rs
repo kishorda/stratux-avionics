@@ -7,12 +7,13 @@
 
 use std::time::{Duration, Instant};
 
-use avionics_ui::interact::{tap, two_finger_tap, zone_for, TapZone};
+use avionics_ui::interact::{apply_key, tap, two_finger_tap, zone_for, TapZone};
 use avionics_ui::nexrad::{
     age_alpha, colour, fade_bucket, fade_fingerprint, ground_distance_nm, Mosaic, MosaicConfig,
     Patch,
 };
-use avionics_ui::weatherpage::format_age;
+use avionics_ui::softkeys::SoftKey;
+use avionics_ui::weatherpage::{format_age, row_at, row_center, rows_per_page};
 use avionics_ui::{Layout, Orientation, Page, Theme, ViewState};
 use stratux_client::domain::{LatLon, NexradBlock, NexradKind};
 
@@ -26,7 +27,13 @@ const CENTRE: LatLon = LatLon {
 const BLOCK_WIDTH_DEG: f64 = 48.0 / 60.0;
 const BLOCK_HEIGHT_DEG: f64 = 4.0 / 60.0;
 
-fn block(kind: NexradKind, lat_north: f64, lon_west: f64, bins: Vec<u8>, received: Instant) -> NexradBlock {
+fn block(
+    kind: NexradKind,
+    lat_north: f64,
+    lon_west: f64,
+    bins: Vec<u8>,
+    received: Instant,
+) -> NexradBlock {
     NexradBlock {
         kind,
         scale: 1,
@@ -56,16 +63,36 @@ fn regional_and_conus_intensity_scales_are_offset_by_one() {
     // This is the single most likely thing to be silently wrong. Upstream fills an empty regional
     // block with 0 and an empty CONUS block with 1, which means CONUS shifts the whole scale up by
     // one. Treating them alike paints phantom precipitation or punches holes through real coverage.
-    assert_eq!(colour(NexradKind::Regional, 0), None, "regional 0 is <5 dBZ");
-    assert!(colour(NexradKind::Regional, 1).is_some(), "regional 1 is real return");
+    assert_eq!(
+        colour(NexradKind::Regional, 0),
+        None,
+        "regional 0 is <5 dBZ"
+    );
+    assert!(
+        colour(NexradKind::Regional, 1).is_some(),
+        "regional 1 is real return"
+    );
 
     assert_eq!(colour(NexradKind::Conus, 0), None, "CONUS 0 is no data");
-    assert_eq!(colour(NexradKind::Conus, 1), None, "CONUS 1 is no precipitation");
-    assert!(colour(NexradKind::Conus, 2).is_some(), "CONUS 2 is the first real return");
+    assert_eq!(
+        colour(NexradKind::Conus, 1),
+        None,
+        "CONUS 1 is no precipitation"
+    );
+    assert!(
+        colour(NexradKind::Conus, 2).is_some(),
+        "CONUS 2 is the first real return"
+    );
 
     // The lightest visible colour is the same on both products, just reached at a different level.
-    assert_eq!(colour(NexradKind::Regional, 1), colour(NexradKind::Conus, 2));
-    assert_eq!(colour(NexradKind::Regional, 7), colour(NexradKind::Conus, 8));
+    assert_eq!(
+        colour(NexradKind::Regional, 1),
+        colour(NexradKind::Conus, 2)
+    );
+    assert_eq!(
+        colour(NexradKind::Regional, 7),
+        colour(NexradKind::Conus, 8)
+    );
 }
 
 #[test]
@@ -74,7 +101,11 @@ fn intensity_ramps_monotonically_and_never_indexes_off_the_end() {
     let mut previous = None;
     for intensity in 1..=7u8 {
         let current = colour(NexradKind::Regional, intensity).expect("visible level");
-        assert_ne!(Some(current), previous, "level {intensity} duplicates the previous colour");
+        assert_ne!(
+            Some(current),
+            previous,
+            "level {intensity} duplicates the previous colour"
+        );
         previous = Some(current);
     }
     for intensity in 8..=255u8 {
@@ -175,11 +206,19 @@ fn the_mosaic_is_not_transposed_or_mirrored() {
     let (nw, se) = b.bin_bounds(0, 0).unwrap();
     let inside = LatLon::new((nw.lat + se.lat) * 0.5, (nw.lon + se.lon) * 0.5);
     let texel = patch.texel_at(inside).unwrap();
-    assert_eq!((texel.r, texel.g, texel.b), hot, "the hot bin should be at the NW corner");
+    assert_eq!(
+        (texel.r, texel.g, texel.b),
+        hot,
+        "the hot bin should be at the NW corner"
+    );
 
     // Its east neighbour, its south neighbour, and the SE corner must all be blank. If the mosaic
     // were transposed or mirrored, at least one of these would be painted instead.
-    for (bx, by, label) in [(1, 0, "east neighbour"), (0, 1, "south neighbour"), (31, 3, "SE corner")] {
+    for (bx, by, label) in [
+        (1, 0, "east neighbour"),
+        (0, 1, "south neighbour"),
+        (31, 3, "SE corner"),
+    ] {
         let (nw, se) = b.bin_bounds(bx, by).unwrap();
         let mid = LatLon::new((nw.lat + se.lat) * 0.5, (nw.lon + se.lon) * 0.5);
         let texel = patch.texel_at(mid).unwrap();
@@ -221,7 +260,13 @@ fn blocks_outside_the_patch_are_skipped_not_wrapped() {
     let bins = vec![6u8; NexradBlock::BIN_COUNT];
 
     // Far away in both axes — well outside a 30 nm half-span.
-    let far = block(NexradKind::Regional, CENTRE.lat + 20.0, CENTRE.lon + 20.0, bins, now);
+    let far = block(
+        NexradKind::Regional,
+        CENTRE.lat + 20.0,
+        CENTRE.lon + 20.0,
+        bins,
+        now,
+    );
     let patch = Patch::build(&config, [far].iter(), CENTRE, now);
 
     assert!(patch.is_empty(), "a distant block must not paint anything");
@@ -241,7 +286,10 @@ fn an_all_empty_block_paints_nothing() {
         let bins = vec![empty; NexradBlock::BIN_COUNT];
         let b = block(kind, CENTRE.lat, CENTRE.lon, bins, now);
         let patch = Patch::build(&config, [b].iter(), CENTRE, now);
-        assert!(patch.is_empty(), "{kind:?} empty block should paint nothing");
+        assert!(
+            patch.is_empty(),
+            "{kind:?} empty block should paint nothing"
+        );
     }
 }
 
@@ -252,11 +300,21 @@ fn stale_blocks_are_composited_more_faintly_than_fresh_ones() {
     let bins = vec![5u8; NexradBlock::BIN_COUNT];
 
     let sample = LatLon::new(CENTRE.lat, CENTRE.lon);
-    let position = (CENTRE.lat + BLOCK_HEIGHT_DEG * 0.5, CENTRE.lon - BLOCK_WIDTH_DEG * 0.5);
+    let position = (
+        CENTRE.lat + BLOCK_HEIGHT_DEG * 0.5,
+        CENTRE.lon - BLOCK_WIDTH_DEG * 0.5,
+    );
 
     let fresh = Patch::build(
         &config,
-        [block(NexradKind::Regional, position.0, position.1, bins.clone(), now)].iter(),
+        [block(
+            NexradKind::Regional,
+            position.0,
+            position.1,
+            bins.clone(),
+            now,
+        )]
+        .iter(),
         CENTRE,
         now,
     );
@@ -286,8 +344,12 @@ fn stale_blocks_are_composited_more_faintly_than_fresh_ones() {
 #[test]
 fn positions_outside_the_patch_have_no_texel() {
     let patch = Patch::build(&small_config(), [].iter(), CENTRE, Instant::now());
-    assert!(patch.texel_at(LatLon::new(CENTRE.lat + 30.0, CENTRE.lon)).is_none());
-    assert!(patch.texel_at(LatLon::new(CENTRE.lat, CENTRE.lon + 30.0)).is_none());
+    assert!(patch
+        .texel_at(LatLon::new(CENTRE.lat + 30.0, CENTRE.lon))
+        .is_none());
+    assert!(patch
+        .texel_at(LatLon::new(CENTRE.lat, CENTRE.lon + 30.0))
+        .is_none());
     assert!(patch.texel_at(CENTRE).is_some());
 }
 
@@ -306,7 +368,13 @@ fn the_fade_fingerprint_changes_only_when_a_block_crosses_a_fade_step() {
     // a Pi 3.
     let now = Instant::now();
     let bins = vec![5u8; NexradBlock::BIN_COUNT];
-    let blocks = [block(NexradKind::Regional, CENTRE.lat, CENTRE.lon, bins, now)];
+    let blocks = [block(
+        NexradKind::Regional,
+        CENTRE.lat,
+        CENTRE.lon,
+        bins,
+        now,
+    )];
 
     let base = fade_fingerprint(blocks.iter(), now);
 
@@ -334,7 +402,13 @@ fn the_fade_fingerprint_does_not_depend_on_iteration_order() {
     // it, the texture would be rebuilt at random.
     let now = Instant::now();
     let bins = vec![4u8; NexradBlock::BIN_COUNT];
-    let a = block(NexradKind::Regional, CENTRE.lat, CENTRE.lon, bins.clone(), now);
+    let a = block(
+        NexradKind::Regional,
+        CENTRE.lat,
+        CENTRE.lon,
+        bins.clone(),
+        now,
+    );
     let b = block(
         NexradKind::Regional,
         CENTRE.lat + BLOCK_HEIGHT_DEG,
@@ -360,13 +434,19 @@ fn moving_far_enough_forces_a_recentre() {
         avionics_ui::projection::advance(CENTRE, 90.0, 3600.0, 1.0),
     );
     assert!((near - 1.0).abs() < 0.01, "1 nm displacement, got {near}");
-    assert!(config.recentre_after_nm > 1.0, "1 nm should not force a recentre");
+    assert!(
+        config.recentre_after_nm > 1.0,
+        "1 nm should not force a recentre"
+    );
 
     let far = ground_distance_nm(
         CENTRE,
         avionics_ui::projection::advance(CENTRE, 90.0, 3600.0 * 25.0, 1.0),
     );
-    assert!(far > config.recentre_after_nm, "25 nm must force a recentre");
+    assert!(
+        far > config.recentre_after_nm,
+        "25 nm must force a recentre"
+    );
 }
 
 // --- interaction --------------------------------------------------------------------------
@@ -380,7 +460,10 @@ fn tap_zones_split_the_screen_as_expected() {
     let l = layout();
     assert_eq!(zone_for(&l, 400.0, 4.0), TapZone::StatusBar);
     assert_eq!(zone_for(&l, 400.0, l.height - 2.0), TapZone::Footer);
-    assert_eq!(zone_for(&l, 400.0, l.status_bar_height + 10.0), TapZone::BodyUpper);
+    assert_eq!(
+        zone_for(&l, 400.0, l.status_bar_height + 10.0),
+        TapZone::BodyUpper
+    );
     assert_eq!(
         zone_for(&l, 400.0, l.height - l.footer_height - 10.0),
         TapZone::BodyLower
@@ -398,8 +481,12 @@ fn the_status_bar_is_inert() {
     let x = l.content_x0 + l.content_width() * 0.5;
 
     for _ in 0..3 {
-        tap(&mut view, &l, x, 4.0, 8, 0);
-        assert_eq!(view.page, Page::PlanView, "the status bar must not change page");
+        tap(&Theme::dark(), &mut view, &l, x, 4.0, 8, 0);
+        assert_eq!(
+            view.page,
+            Page::PlanView,
+            "the status bar must not change page"
+        );
     }
 }
 
@@ -412,62 +499,168 @@ fn tapping_the_plan_view_body_changes_nothing() {
     let mut view = ViewState::default();
     let before = view.range_nm;
 
-    tap(&mut view, &l, 400.0, 240.0, 8, 0);
+    tap(&Theme::dark(), &mut view, &l, 400.0, 240.0, 8, 0);
     assert_eq!(view.range_nm, before, "body taps must not change range");
     assert_eq!(view.page, Page::PlanView);
 }
 
 #[test]
-fn tapping_the_weather_page_scrolls_instead_of_changing_range() {
+fn tapping_a_weather_row_opens_that_report() {
+    // The whole point of the gesture: the report that opens must be the one under the finger.
+    // This test used to assert that a body tap scrolled the list — that moved to the UP and DOWN
+    // keys, which is where `scrolling_past_the_end_wraps_to_the_top` now exercises it.
+    let theme = Theme::dark();
     let l = layout();
+    let rows = rows_per_page(&theme, &l);
+    let total = 30;
+    let range = ViewState::default().range_nm;
+
+    for row in [0, 1, rows - 1] {
+        let mut view = ViewState {
+            page: Page::Weather,
+            ..Default::default()
+        };
+        tap(
+            &theme,
+            &mut view,
+            &l,
+            400.0,
+            row_center(&theme, &l, row),
+            rows,
+            total,
+        );
+        assert!(view.weather_decode, "row {row} should open decoded");
+        assert_eq!(
+            view.weather_scroll, row,
+            "row {row} selected the wrong report"
+        );
+        assert_eq!(view.range_nm, range, "range must not change on this page");
+    }
+}
+
+#[test]
+fn tapping_a_row_on_a_scrolled_page_accounts_for_the_offset() {
+    // The failure this guards against is silent and dangerous in exactly the wrong way: you tap
+    // the row that says KTTN and read a report for somewhere else. Nothing on the decoded page
+    // would look wrong, because it correctly describes the station it actually opened.
+    let theme = Theme::dark();
+    let l = layout();
+    let rows = rows_per_page(&theme, &l);
     let mut view = ViewState {
         page: Page::Weather,
+        weather_scroll: rows,
         ..Default::default()
     };
-    let range = view.range_nm;
-    let rows = 8;
-    let total = 30;
 
-    // Lower half pages forward.
-    tap(&mut view, &l, 400.0, l.height - l.footer_height - 10.0, rows, total);
-    assert_eq!(view.weather_scroll, rows);
-    assert_eq!(view.range_nm, range, "range must not change on the weather page");
+    tap(
+        &theme,
+        &mut view,
+        &l,
+        400.0,
+        row_center(&theme, &l, 2),
+        rows,
+        40,
+    );
+    assert_eq!(view.weather_scroll, rows + 2);
+}
 
-    // Upper half pages back.
-    tap(&mut view, &l, 400.0, l.status_bar_height + 10.0, rows, total);
-    assert_eq!(view.weather_scroll, 0);
+#[test]
+fn tapping_a_decoded_report_returns_to_its_page_of_the_list() {
+    // Entering by tap has to be undoable by tap, or the gesture is a one-way door. Coming back to
+    // the *page* the report was on rather than to the report's own index is what makes it a round
+    // trip: otherwise closing the last report on a page leaves it stranded at the top of the list.
+    let theme = Theme::dark();
+    let l = layout();
+    let rows = rows_per_page(&theme, &l);
+    let mut view = ViewState {
+        page: Page::Weather,
+        weather_scroll: rows,
+        ..Default::default()
+    };
+    let last = row_center(&theme, &l, rows - 1);
 
-    // Paging back from the top stays at the top rather than underflowing.
-    tap(&mut view, &l, 400.0, l.status_bar_height + 10.0, rows, total);
-    assert_eq!(view.weather_scroll, 0);
+    tap(&theme, &mut view, &l, 400.0, last, rows, 40);
+    assert!(view.weather_decode);
+    assert_eq!(view.weather_scroll, rows * 2 - 1);
+
+    tap(&theme, &mut view, &l, 400.0, last, rows, 40);
+    assert!(!view.weather_decode, "a second tap comes back out");
+    assert_eq!(view.weather_scroll, rows, "and to the page it came from");
 }
 
 #[test]
 fn scrolling_past_the_end_wraps_to_the_top() {
-    // With no scrollbar to drag, a tap that does nothing looks like the display has frozen.
-    let l = layout();
+    // With no scrollbar to drag, a key that does nothing looks like the display has frozen.
     let mut view = ViewState {
         page: Page::Weather,
         ..Default::default()
     };
     let (rows, total) = (8usize, 10usize);
-    let lower = l.height - l.footer_height - 10.0;
 
-    tap(&mut view, &l, 400.0, lower, rows, total);
+    apply_key(&mut view, SoftKey::ScrollDown, rows, total);
     assert_eq!(view.weather_scroll, total - rows, "clamps to the last page");
-    tap(&mut view, &l, 400.0, lower, rows, total);
+    apply_key(&mut view, SoftKey::ScrollDown, rows, total);
     assert_eq!(view.weather_scroll, 0, "then wraps");
 }
 
 #[test]
-fn a_short_list_does_not_scroll_at_all() {
+fn tapping_below_the_last_report_does_nothing() {
+    // Three reports on a page that holds fifteen leaves most of the body empty. There is no report
+    // under that space, and opening the nearest one would open a report the finger was not on.
+    let theme = Theme::dark();
     let l = layout();
+    let rows = rows_per_page(&theme, &l);
     let mut view = ViewState {
         page: Page::Weather,
         ..Default::default()
     };
-    tap(&mut view, &l, 400.0, l.height - l.footer_height - 10.0, 8, 3);
+
+    tap(
+        &theme,
+        &mut view,
+        &l,
+        400.0,
+        row_center(&theme, &l, rows - 1),
+        rows,
+        3,
+    );
+    assert!(!view.weather_decode);
     assert_eq!(view.weather_scroll, 0);
+}
+
+#[test]
+fn the_header_row_is_not_a_report() {
+    // `row_at` counts from the first entry, not from the top of the body. Getting this wrong by
+    // one row would mean every tap on the page opened its neighbour.
+    let theme = Theme::dark();
+    let l = layout();
+    assert_eq!(row_at(&theme, &l, l.status_bar_height + 2.0), None);
+    assert_eq!(row_at(&theme, &l, row_center(&theme, &l, 0)), Some(0));
+    assert_eq!(row_at(&theme, &l, row_center(&theme, &l, 4)), Some(4));
+}
+
+#[test]
+fn rows_tile_without_gaps_between_them() {
+    // A dead strip between two touch targets reads as a frozen display. Sweep the whole band of
+    // rows and check every pixel belongs to one, in order.
+    let theme = Theme::dark();
+    let l = layout();
+    let rows = rows_per_page(&theme, &l);
+    let mut previous = 0;
+
+    let top =
+        row_center(&theme, &l, 0) - (row_center(&theme, &l, 1) - row_center(&theme, &l, 0)) * 0.5;
+    let mut y = top + 0.5;
+    while y < row_center(&theme, &l, rows - 1) {
+        let row = row_at(&theme, &l, y).unwrap_or_else(|| panic!("no row at y = {y}"));
+        assert!(
+            row == previous || row == previous + 1,
+            "y = {y} jumped from row {previous} to {row}"
+        );
+        previous = row;
+        y += 1.0;
+    }
+    assert_eq!(previous, rows - 1, "the sweep should reach the last row");
 }
 
 #[test]
@@ -492,7 +685,7 @@ fn tapping_the_footer_does_nothing() {
     let l = layout();
     let mut view = ViewState::default();
     let before = view.clone();
-    tap(&mut view, &l, 400.0, l.height - 2.0, 8, 30);
+    tap(&Theme::dark(), &mut view, &l, 400.0, l.height - 2.0, 8, 30);
     assert_eq!(view.page, before.page);
     assert_eq!(view.range_nm, before.range_nm);
     assert_eq!(view.weather_scroll, before.weather_scroll);

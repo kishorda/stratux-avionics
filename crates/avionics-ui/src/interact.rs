@@ -43,7 +43,15 @@ pub fn zone_for(layout: &Layout, _x: f32, y: f32) -> TapZone {
 ///
 /// `weather_rows` is how many text entries currently fit, needed to page the weather list; pass
 /// [`crate::weatherpage::rows_per_page`].
-pub fn tap(view: &mut ViewState, layout: &Layout, x: f32, y: f32, weather_rows: usize, weather_total: usize) {
+pub fn tap(
+    theme: &crate::Theme,
+    view: &mut ViewState,
+    layout: &Layout,
+    x: f32,
+    y: f32,
+    weather_rows: usize,
+    weather_total: usize,
+) {
     // Both strips win over everything: they overlap the ends of the status bar and the body, and
     // a key press must never also register as whatever is underneath it.
     if let Some(page) = pagestrip::hit(layout, x, y) {
@@ -67,7 +75,10 @@ pub fn tap(view: &mut ViewState, layout: &Layout, x: f32, y: f32, weather_rows: 
         // itself against the panel should not change what is on it.
         TapZone::StatusBar => {}
         TapZone::Footer => {}
-        zone => match view.page {
+        // Upper and lower halves are the same thing now. The split existed so a body tap could
+        // page the weather list up or down; that moved to the UP and DOWN keys, and the body is
+        // hit-tested against the row under the finger instead.
+        TapZone::BodyUpper | TapZone::BodyLower => match view.page {
             // Deliberately inert. Before the soft keys existed, a tap anywhere in the body cycled
             // the range — which meant a hand steadying itself against the panel in turbulence
             // silently changed the range scale. Now that there is a dedicated RNG key, the body
@@ -76,9 +87,49 @@ pub fn tap(view: &mut ViewState, layout: &Layout, x: f32, y: f32, weather_rows: 
             // Nothing on the attitude page is adjustable, and an instrument that reacts to being
             // brushed is worse than one that does not react at all.
             Page::Ahrs => {}
-            Page::Weather => scroll_weather(view, zone, weather_rows, weather_total),
+            // The one body on the panel that is a target rather than a surface. A weather row
+            // names a station and there is exactly one thing you want from it — the full report —
+            // so the row itself opens it, and a second tap comes back out.
+            //
+            // This replaces tap-to-scroll, which the body used to do. Scrolling has had dedicated
+            // UP and DOWN keys since the soft-key strip landed, and the same argument that made
+            // the plan-view body inert applies: a gesture that silently moves the list is worse
+            // than one that opens what is under the finger, because the pilot can see the result
+            // of the second and not of the first.
+            Page::Weather => tap_weather(view, theme, layout, y, weather_rows, weather_total),
         },
     }
+}
+
+fn tap_weather(
+    view: &mut ViewState,
+    theme: &crate::Theme,
+    layout: &Layout,
+    y: f32,
+    rows: usize,
+    total: usize,
+) {
+    if view.weather_decode {
+        leave_decode(view, rows);
+    } else if let Some(index) = crate::weatherpage::item_at(theme, layout, view, total, y) {
+        view.weather_scroll = index;
+        view.weather_decode = true;
+    }
+    // A tap in the empty space below the last report does nothing. There is no report under it to
+    // open, and inventing one — the nearest, the last — would be a different report from the one
+    // the finger was on.
+}
+
+/// Return to the list, showing the page the selected report is on.
+///
+/// `weather_scroll` means an index while decoding and an offset in the list, so leaving decode
+/// has to convert between them. Snapping to the page boundary rather than using the index
+/// directly is what makes tapping a row and tapping back a round trip: without it, opening the
+/// tenth report and closing it again leaves that report at the top of a scrolled list.
+fn leave_decode(view: &mut ViewState, rows: usize) {
+    let rows = rows.max(1);
+    view.weather_decode = false;
+    view.weather_scroll = (view.weather_scroll / rows) * rows;
 }
 
 /// Apply a soft key. Separate from [`tap`] so the mapping is testable without hit-testing.
@@ -88,7 +139,13 @@ pub fn apply_key(
     weather_rows: usize,
     weather_total: usize,
 ) {
-    apply_key_at(view, key, weather_rows, weather_total, std::time::Instant::now())
+    apply_key_at(
+        view,
+        key,
+        weather_rows,
+        weather_total,
+        std::time::Instant::now(),
+    )
 }
 
 /// As [`apply_key`], with an explicit clock so the cage state machine is testable.
@@ -107,13 +164,17 @@ pub fn apply_key_at(
         SoftKey::CycleAltitudeFilter => view.cycle_altitude_filter(),
         SoftKey::ToggleUnderlay => view.show_weather_underlay = !view.show_weather_underlay,
         SoftKey::CycleMapLayers => view.cycle_map_layers(),
-        SoftKey::ScrollUp => scroll_weather(view, TapZone::BodyUpper, weather_rows, weather_total),
-        SoftKey::ScrollDown => scroll_weather(view, TapZone::BodyLower, weather_rows, weather_total),
+        SoftKey::ScrollUp => scroll_weather(view, Scroll::Back, weather_rows, weather_total),
+        SoftKey::ScrollDown => scroll_weather(view, Scroll::Forward, weather_rows, weather_total),
         SoftKey::ToggleDecode => {
-            view.weather_decode = !view.weather_decode;
-            // Entering decode selects the first entry that was on screen, so the report being
-            // expanded is one the reader was already looking at rather than a jump to the top.
-            view.weather_scroll = view.weather_scroll.min(weather_total.saturating_sub(1));
+            if view.weather_decode {
+                leave_decode(view, weather_rows);
+            } else {
+                view.weather_decode = true;
+                // Entering decode selects the first entry that was on screen, so the report being
+                // expanded is one the reader was already looking at rather than a jump to the top.
+                view.weather_scroll = view.weather_scroll.min(weather_total.saturating_sub(1));
+            }
         }
         SoftKey::CageAhrs => match view.cage {
             // Arm, then confirm. A single press must never re-reference the sensor.
@@ -135,28 +196,37 @@ pub fn two_finger_tap(view: &mut ViewState) {
     }
 }
 
-fn scroll_weather(view: &mut ViewState, zone: TapZone, rows: usize, total: usize) {
+/// Which way the UP/DOWN keys move the weather list.
+///
+/// Used to be a [`TapZone`], back when the upper and lower halves of the body scrolled it. Keeping
+/// that would mean the scroll keys asking "where was I tapped?" — a question neither of them can
+/// answer, since they are pressed rather than aimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Back,
+    Forward,
+}
+
+fn scroll_weather(view: &mut ViewState, direction: Scroll, rows: usize, total: usize) {
     // Decoding shows one report at a time, so UP/DOWN step by one entry rather than by a page.
     let (step, max_offset) = if view.weather_decode {
         (1, total.saturating_sub(1))
     } else {
         (rows, total.saturating_sub(rows))
     };
-    let rows = step;
-    match zone {
-        TapZone::BodyLower => {
-            // Wrap at the end rather than sticking: with no scrollbar to drag, a dead tap looks
+    match direction {
+        Scroll::Forward => {
+            // Wrap at the end rather than sticking: with no scrollbar to drag, a dead key looks
             // like the display has frozen.
             view.weather_scroll = if view.weather_scroll >= max_offset {
                 0
             } else {
-                (view.weather_scroll + rows).min(max_offset)
+                (view.weather_scroll + step).min(max_offset)
             };
         }
-        TapZone::BodyUpper => {
-            view.weather_scroll = view.weather_scroll.saturating_sub(rows);
+        Scroll::Back => {
+            view.weather_scroll = view.weather_scroll.saturating_sub(step);
         }
-        _ => {}
     }
 }
 
@@ -181,7 +251,7 @@ pub fn handle_tap(
     x: f32,
     y: f32,
 ) {
-    let rows = crate::weatherpage::rows_per_page(ui, layout);
+    let rows = crate::weatherpage::rows_per_page(&ui.theme, layout);
     let total = state.weather.len();
 
     let on_strip = pagestrip::hit(layout, x, y).is_some() || softkeys::hit(layout, x, y).is_some();
@@ -222,7 +292,7 @@ pub fn handle_tap(
         }
     }
 
-    tap(view, layout, x, y, rows, total);
+    tap(&ui.theme, view, layout, x, y, rows, total);
 }
 
 #[cfg(test)]
@@ -268,12 +338,12 @@ mod tests {
         assert_eq!(view.range_nm, 10.0);
 
         let (x, y) = point_of(&l, Page::PlanView, SoftKey::RangeUp);
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.range_nm, 20.0, "RNG+ should step up");
 
         let (x, y) = point_of(&l, Page::PlanView, SoftKey::RangeDown);
-        tap(&mut view, &l, x, y, 5, 0);
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.range_nm, 5.0, "RNG- should step down twice");
     }
 
@@ -284,8 +354,20 @@ mod tests {
         let l = layout();
         let mut view = ViewState::default();
         let before = view.range_nm;
-        for y in [l.status_bar_height + 20.0, l.height * 0.5, l.height - l.footer_height - 20.0] {
-            tap(&mut view, &l, l.content_x0 + l.content_width() * 0.5, y, 5, 0);
+        for y in [
+            l.status_bar_height + 20.0,
+            l.height * 0.5,
+            l.height - l.footer_height - 20.0,
+        ] {
+            tap(
+                &Theme::dark(),
+                &mut view,
+                &l,
+                l.content_x0 + l.content_width() * 0.5,
+                y,
+                5,
+                0,
+            );
         }
         assert_eq!(view.range_nm, before, "body taps must not change range");
         assert_eq!(view.page, Page::PlanView, "body taps must not change page");
@@ -304,7 +386,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (x, y) = page_point(&l, to);
-                tap(&mut view, &l, x, y, 5, 0);
+                tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
                 assert_eq!(view.page, to, "{from:?} -> {to:?} took more than one press");
             }
         }
@@ -318,7 +400,15 @@ mod tests {
         let l = layout();
         let mut view = ViewState::default();
         let x = l.content_x0 + l.content_width() * 0.5;
-        tap(&mut view, &l, x, l.status_bar_height * 0.5, 5, 0);
+        tap(
+            &Theme::dark(),
+            &mut view,
+            &l,
+            x,
+            l.status_bar_height * 0.5,
+            5,
+            0,
+        );
         assert_eq!(view.page, Page::PlanView, "the status bar must be inert");
     }
 
@@ -334,13 +424,13 @@ mod tests {
         let (x, y) = point_of(&l, Page::Ahrs, SoftKey::CageAhrs);
 
         assert_eq!(view.cage, CageState::Idle);
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.cage, CageState::Armed, "one press must only arm");
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.cage, CageState::Requested, "the second press confirms");
 
         // Further presses must not queue another request behind the first.
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.cage, CageState::Requested);
 
         let _ = now;
@@ -369,7 +459,11 @@ mod tests {
         view.set_cage(CageState::Done { ok: true }, now);
 
         view.tick_cage(now + std::time::Duration::from_secs(1));
-        assert_eq!(view.cage, CageState::Done { ok: true }, "result should dwell");
+        assert_eq!(
+            view.cage,
+            CageState::Done { ok: true },
+            "result should dwell"
+        );
 
         view.tick_cage(now + crate::CAGE_RESULT_DWELL + std::time::Duration::from_millis(1));
         assert_eq!(view.cage, CageState::Idle);
@@ -386,8 +480,12 @@ mod tests {
                 page,
                 ..Default::default()
             };
-            tap(&mut view, &l, x, y, 5, 20);
-            assert_eq!(view.cage, CageState::Idle, "slot 4 armed a cage on {page:?}");
+            tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
+            assert_eq!(
+                view.cage,
+                CageState::Idle,
+                "slot 4 armed a cage on {page:?}"
+            );
         }
     }
 
@@ -402,18 +500,18 @@ mod tests {
 
         // Browsing: UP/DOWN move a page at a time.
         let down = point_of(&l, Page::Weather, SoftKey::ScrollDown);
-        tap(&mut view, &l, down.0, down.1, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, down.0, down.1, 5, 20);
         assert_eq!(view.weather_scroll, 5, "a page is five rows here");
 
         // Decoding shows one report, so the same keys step one entry.
-        tap(&mut view, &l, x, y, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
         assert!(view.weather_decode);
         let down = point_of(&l, Page::Weather, SoftKey::ScrollDown);
-        tap(&mut view, &l, down.0, down.1, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, down.0, down.1, 5, 20);
         assert_eq!(view.weather_scroll, 6, "decode mode steps one entry");
 
         // And back.
-        tap(&mut view, &l, x, y, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
         assert!(!view.weather_decode);
     }
 
@@ -426,8 +524,11 @@ mod tests {
             ..Default::default()
         };
         let (x, y) = point_of(&l, Page::Weather, SoftKey::ToggleDecode);
-        tap(&mut view, &l, x, y, 5, 3);
-        assert_eq!(view.weather_scroll, 2, "clamped to the last entry, not left out of range");
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 3);
+        assert_eq!(
+            view.weather_scroll, 2,
+            "clamped to the last entry, not left out of range"
+        );
     }
 
     #[test]
@@ -439,7 +540,7 @@ mod tests {
                 page,
                 ..Default::default()
             };
-            tap(&mut view, &l, x, y, 5, 20);
+            tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
             assert!(
                 !view.weather_decode,
                 "the slot DECODE occupies on the weather page toggled it on {page:?}"
@@ -474,7 +575,15 @@ mod tests {
         };
         let before = view.clone();
         for y in [l.height * 0.35, l.height * 0.5, l.height * 0.65] {
-            tap(&mut view, &l, l.content_x0 + l.content_width() * 0.5, y, 5, 0);
+            tap(
+                &Theme::dark(),
+                &mut view,
+                &l,
+                l.content_x0 + l.content_width() * 0.5,
+                y,
+                5,
+                0,
+            );
         }
         assert_eq!(view.page, before.page);
         assert_eq!(view.range_nm, before.range_nm);
@@ -494,9 +603,12 @@ mod tests {
         // Slots 3 and 4 are unused on the weather page.
         for slot in [3, 4] {
             let (x, y) = key_point(&l, slot);
-            tap(&mut view, &l, x, y, 5, 20);
+            tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
         }
-        assert_eq!(view.page, before.page, "an inert key must not fall through to the page");
+        assert_eq!(
+            view.page, before.page,
+            "an inert key must not fall through to the page"
+        );
         assert_eq!(view.weather_scroll, before.weather_scroll);
     }
 
@@ -522,7 +634,7 @@ mod tests {
             page: Page::Weather,
             ..Default::default()
         };
-        tap(&mut view, &l, x, y, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
         assert_eq!(
             view.weather_scroll, 5,
             "double dispatch would have scrolled down then back up to 0"
@@ -543,9 +655,22 @@ mod tests {
             l.content_x0 + l.content_width() * 0.5,
             l.content_x1 + l.strip_width * 0.5,
         ] {
-            for y in [0.0, l.status_bar_height * 0.5, l.footer_y0() + 1.0, l.height - 1.0] {
-                assert_eq!(softkeys::hit(&l, x, y), None, "function strip at ({x}, {y})");
-                assert_eq!(crate::pagestrip::hit(&l, x, y), None, "page strip at ({x}, {y})");
+            for y in [
+                0.0,
+                l.status_bar_height * 0.5,
+                l.footer_y0() + 1.0,
+                l.height - 1.0,
+            ] {
+                assert_eq!(
+                    softkeys::hit(&l, x, y),
+                    None,
+                    "function strip at ({x}, {y})"
+                );
+                assert_eq!(
+                    crate::pagestrip::hit(&l, x, y),
+                    None,
+                    "page strip at ({x}, {y})"
+                );
             }
         }
         // And the strips do cover everything between the bars.
@@ -561,13 +686,16 @@ mod tests {
         assert!(view.show_weather_underlay);
 
         let (x, y) = key_point(&l, 4);
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert!(!view.show_weather_underlay);
 
         // Slot 4 is inert on the weather page, so it must not toggle anything there.
         view.page = Page::Weather;
-        tap(&mut view, &l, x, y, 5, 0);
-        assert!(!view.show_weather_underlay, "slot 4 must be inert on the weather page");
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
+        assert!(
+            !view.show_weather_underlay,
+            "slot 4 must be inert on the weather page"
+        );
     }
 
     #[test]
@@ -577,7 +705,7 @@ mod tests {
         let mut by_gesture = ViewState::default();
 
         let (x, y) = point_of(&l, Page::PlanView, SoftKey::ToggleOrientation);
-        tap(&mut by_key, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut by_key, &l, x, y, 5, 0);
         two_finger_tap(&mut by_gesture);
 
         assert_eq!(by_key.orientation, by_gesture.orientation);
@@ -592,11 +720,14 @@ mod tests {
             ..Default::default()
         };
         let (x, y) = point_of(&l, Page::Weather, SoftKey::ScrollDown);
-        tap(&mut view, &l, x, y, 5, 20);
-        assert_eq!(view.weather_scroll, 5, "DOWN should advance one page of rows");
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
+        assert_eq!(
+            view.weather_scroll, 5,
+            "DOWN should advance one page of rows"
+        );
 
         let (x, y) = point_of(&l, Page::Weather, SoftKey::ScrollUp);
-        tap(&mut view, &l, x, y, 5, 20);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 20);
         assert_eq!(view.weather_scroll, 0, "UP should come back");
     }
 
@@ -609,7 +740,7 @@ mod tests {
             let mut by_tap = ViewState::default();
             let mut direct = ViewState::default();
             let (x, y) = key_point(&l, slot);
-            tap(&mut by_tap, &l, x, y, 5, 0);
+            tap(&Theme::dark(), &mut by_tap, &l, x, y, 5, 0);
             apply_key(&mut direct, *key, 5, 0);
             assert_eq!(by_tap.page, direct.page, "slot {slot}");
             assert_eq!(by_tap.range_nm, direct.range_nm, "slot {slot}");
@@ -636,7 +767,7 @@ mod tests {
         let (x, y) = point_of(&l, Page::PlanView, SoftKey::CycleAltitudeFilter);
         let mut seen = vec![start];
         for _ in 1..crate::AltitudeFilter::ALL.len() {
-            tap(&mut view, &l, x, y, 5, 0);
+            tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
             assert!(
                 !seen.contains(&view.altitude_filter),
                 "{:?} came round twice before the cycle closed",
@@ -644,7 +775,7 @@ mod tests {
             );
             seen.push(view.altitude_filter);
         }
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.altitude_filter, start, "the cycle must close");
         assert_eq!(seen.len(), crate::AltitudeFilter::ALL.len());
     }
@@ -656,7 +787,7 @@ mod tests {
         let l = layout();
         let mut view = ViewState::default();
         let (x, y) = point_of(&l, Page::PlanView, SoftKey::CycleAltitudeFilter);
-        tap(&mut view, &l, x, y, 5, 0);
+        tap(&Theme::dark(), &mut view, &l, x, y, 5, 0);
         assert_eq!(view.range_nm, ViewState::default().range_nm);
         assert_eq!(view.orientation, ViewState::default().orientation);
         assert_ne!(view.altitude_filter, ViewState::default().altitude_filter);

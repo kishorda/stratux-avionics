@@ -16,7 +16,7 @@ use avionics_gfx::Canvas;
 use stratux_client::domain::{LatLon, WeatherProduct, WeatherText};
 use stratux_client::AppState;
 
-use crate::{glossary, metar, Chart, Layout, Ui, ViewState};
+use crate::{glossary, metar, Chart, Layout, Theme, Ui, ViewState};
 
 /// Sort priority: the products a pilot reaches for first come first.
 fn priority(product: &WeatherProduct) -> u8 {
@@ -108,20 +108,177 @@ pub fn body_without_prefix<'a>(body: &'a str, location: &str) -> &'a str {
     rest
 }
 
-/// How many entries fit on screen, given the layout. Used for scrolling.
+/// Where each column starts, in pixels from the left edge of the content area.
+///
+/// Fixed rather than flowed. When each field began where the previous one happened to end, the
+/// category badge and the report sat at a different x on every row, so nothing could be scanned
+/// down — which is most of what made this page hard to read.
+///
+/// **Measured from the headings actually on the page**, and three attempts at anything cheaper
+/// were wrong. 9.26 px per character is right for report bodies, which are mostly digits, and
+/// badly low for a station, which is four capitals. 54 px fitted `KMMU` and `KTTN` but not `KSMQ`
+/// or `KFWN`. Then measuring `MMMM` as a synthetic worst case *still* collided, on `KHPN`, `KBLM`,
+/// `KLOM` and `KOQN` — whatever femtovg reports for a run of one repeated glyph, it is not an
+/// upper bound on four mixed ones.
+///
+/// So stop guessing which string is widest and measure the ones being drawn. It costs one text
+/// measurement per visible row, about fifteen a frame, and it is exact by construction. It also
+/// handles the case a worst-case constant cannot: a report with no station falls back to the
+/// product name, and [`WeatherProduct::Other`] carries an arbitrary string off the wire.
+struct Columns {
+    product: f32,
+    category: f32,
+    report: f32,
+}
+
+/// Cap on the first column, in characters, so one long [`WeatherProduct::Other`] label cannot push
+/// the report column off the right of the panel. Headings past this are truncated when drawn.
+const HEADING_MAX_CHARS: usize = 6;
+
+fn columns<'a>(ui: &Ui, canvas: &mut Canvas, headings: impl Iterator<Item = &'a str>) -> Columns {
+    const GAP: f32 = 9.0;
+
+    let mut paint = Paint::color(ui.theme.text_primary);
+    paint.set_font(&[ui.font()]);
+    paint.set_font_size(ui.theme.font_size_small);
+    let width = |canvas: &mut Canvas, text: &str| {
+        canvas
+            .measure_text(0.0, 0.0, text, &paint)
+            .map(|m| m.width())
+            .unwrap_or(0.0)
+    };
+
+    let station = headings
+        .map(|h| width(canvas, heading_shown(h)))
+        .fold(0.0_f32, f32::max);
+
+    let product = station + GAP;
+    let category = product + width(canvas, "M") + GAP;
+    // `MVFR` and `LIFR` are the widest categories; both are four capitals.
+    let report = category + width(canvas, "MVFR") + GAP;
+    Columns {
+        product,
+        category,
+        report,
+    }
+}
+
+/// The heading as drawn: what the column was measured against and what is painted must agree, so
+/// both go through here.
+fn heading_shown(heading: &str) -> &str {
+    match heading.char_indices().nth(HEADING_MAX_CHARS) {
+        Some((end, _)) => &heading[..end],
+        None => heading,
+    }
+}
+
+/// First column for a report: its station, or the product name when it has no station.
+fn heading_for(item: &WeatherText) -> &str {
+    if item.location.is_empty() {
+        item.product.label()
+    } else {
+        &item.location
+    }
+}
+
+/// Clear space between the report and the distance/age block sharing the row.
+///
+/// Generous because the truncation marker is drawn *after* the last token that fitted, so a report
+/// can reach a few pixels past what it was budgeted. At 12 px the ellipsis landed two pixels from
+/// the distance and the two read as one run of text.
+const REPORT_GAP: f32 = 24.0;
+
+/// One letter for a product, for the fixed second column.
+///
+/// A letter only works because the column is fixed: `M` at a known x is unambiguous in a way a
+/// bare `M` in flowing text would not be.
+pub fn product_initial(product: &WeatherProduct) -> &'static str {
+    match product {
+        WeatherProduct::Metar => "M",
+        WeatherProduct::Taf => "T",
+        WeatherProduct::Pirep => "P",
+        WeatherProduct::Sigmet => "S",
+        WeatherProduct::Airmet => "A",
+        WeatherProduct::Winds => "W",
+        WeatherProduct::Notam => "N",
+        WeatherProduct::Other(_) => "\u{2022}",
+    }
+}
+
 /// Extra space after each entry.
 ///
 /// Without it the heading and body lines are evenly spaced, so ten reports read as twenty
 /// undifferentiated lines rather than as ten things. It costs about one entry per page, which is
 /// a good trade now that the nearest report is first and the rest are rarely reached.
-pub fn entry_gap(ui: &Ui) -> f32 {
-    ui.theme.font_size_small * 0.42
+pub fn entry_gap(theme: &Theme) -> f32 {
+    theme.font_size_small * 0.42
 }
 
-pub fn rows_per_page(ui: &Ui, layout: &Layout) -> usize {
-    let line = ui.theme.font_size_small * 1.35;
+pub fn rows_per_page(theme: &Theme, layout: &Layout) -> usize {
+    let line = theme.font_size_small * 1.35;
     let body = layout.height - layout.status_bar_height - layout.footer_height - line;
-    ((body / (line * 2.0 + entry_gap(ui))).floor() as usize).max(1)
+    ((body / (line + entry_gap(theme))).floor() as usize).max(1)
+}
+
+/// Vertical geometry of the entry rows.
+///
+/// Exists so that drawing a row and hit-testing a tap on it cannot disagree. They did once on the
+/// soft-key strip — a test probed a magic `y = 100.0` and silently changed which key it was
+/// pressing when the strip moved eight pixels — and a touch target that is not where its text is
+/// is worse here, because the pilot gets no feedback beyond the wrong report opening.
+struct RowGeometry {
+    /// Text baseline of the first row. Baselines are `Middle`, so this is the row's centre.
+    first: f32,
+    /// Centre-to-centre spacing of consecutive rows.
+    pitch: f32,
+}
+
+fn row_geometry(theme: &Theme, layout: &Layout) -> RowGeometry {
+    let line = theme.font_size_small * 1.35;
+    RowGeometry {
+        // The header sits at `line * 0.6` below the status bar and the separator `line * 1.2`
+        // below that. `draw` starts its loop from this same expression.
+        first: layout.status_bar_height + line * 1.8,
+        pitch: line + entry_gap(theme),
+    }
+}
+
+/// Centre line of a row, counting `0` from the top of the page. The inverse of [`row_at`].
+pub fn row_center(theme: &Theme, layout: &Layout, row: usize) -> f32 {
+    let geometry = row_geometry(theme, layout);
+    geometry.first + geometry.pitch * row as f32
+}
+
+/// Which row a tap at `y` landed on: `0` for the top one, `None` for the header or past the last.
+///
+/// Rows tile with no gaps between them. A dead strip between two touch targets is worse than
+/// picking the nearer one, because a tap that does nothing reads as a frozen display — the same
+/// reasoning that makes the scroll keys wrap rather than stick.
+pub fn row_at(theme: &Theme, layout: &Layout, y: f32) -> Option<usize> {
+    let geometry = row_geometry(theme, layout);
+    let top = geometry.first - geometry.pitch * 0.5;
+    if y < top {
+        return None;
+    }
+    let row = ((y - top) / geometry.pitch).floor() as usize;
+    (row < rows_per_page(theme, layout)).then_some(row)
+}
+
+/// The report a tap at `y` selects, as an index into [`ordered`].
+///
+/// Resolves the scroll offset the same way `draw` does, so the report that opens is the one under
+/// the finger rather than the one that would have been there at scroll zero.
+pub fn item_at(
+    theme: &Theme,
+    layout: &Layout,
+    view: &ViewState,
+    total: usize,
+    y: f32,
+) -> Option<usize> {
+    let per_page = rows_per_page(theme, layout);
+    let offset = view.weather_scroll.min(total.saturating_sub(per_page));
+    let index = offset + row_at(theme, layout, y)?;
+    (index < total).then_some(index)
 }
 
 pub fn draw(
@@ -135,7 +292,7 @@ pub fn draw(
     let theme = &ui.theme;
     let items = ordered(state, ui.chart(), state.ownship.usable_position());
     let line = theme.font_size_small * 1.35;
-    let per_page = rows_per_page(ui, layout);
+    let per_page = rows_per_page(theme, layout);
 
     // Clamp rather than trust the scroll offset: pruning can shrink the list between frames.
     let max_offset = items.len().saturating_sub(per_page);
@@ -158,7 +315,10 @@ pub fn draw(
     let _ = canvas.fill_text(
         layout.content_left(),
         y,
-        format!("FIS-B TEXT  {} products   |   NEXRAD {nexrad_text}", items.len()),
+        format!(
+            "FIS-B TEXT  {} products   |   NEXRAD {nexrad_text}",
+            items.len()
+        ),
         &header,
     );
 
@@ -181,7 +341,12 @@ pub fn draw(
         );
     }
 
-    y += line * 1.2;
+    // The rows start here, and `row_at` has to agree with it to the pixel or a tap opens the wrong
+    // report. Take the value from the shared geometry rather than re-deriving it, and check the
+    // two really are the same — `rows_line_up_with_where_they_are_drawn` fails if this drifts.
+    y = row_geometry(theme, layout).first;
+    debug_assert!((y - (layout.status_bar_height + line * 1.8)).abs() < 0.001);
+
     let mut separator = Path::new();
     separator.move_to(layout.content_left(), y - line * 0.4);
     separator.line_to(layout.content_right(), y - line * 0.4);
@@ -197,58 +362,54 @@ pub fn draw(
 
     if view.weather_decode {
         let selected = view.weather_scroll.min(items.len() - 1);
-        draw_decoded(ui, canvas, items[selected], now, layout, y, selected, items.len());
+        draw_decoded(
+            ui,
+            canvas,
+            items[selected],
+            now,
+            layout,
+            y,
+            selected,
+            items.len(),
+        );
         return;
     }
 
-    // --- entries ---
-    for item in items.iter().skip(offset).take(per_page) {
+    let visible = || items.iter().skip(offset).take(per_page);
+    let cols = columns(ui, canvas, visible().map(|item| heading_for(item)));
+
+    // --- entries, one row each ---
+    //
+    // One line per report rather than two. The heading used to sit above its body, which meant
+    // every report cost two lines and nine of them filled the panel — the state the page was
+    // reported as "very crowded" in. Columns are at fixed x so the eye can run straight down the
+    // station rather than tracking a left edge that moved with the width of whatever preceded it.
+    //
+    // The cost is honest: the report gets about 43 characters instead of 63. That is the whole
+    // operational content of a typical METAR — time, wind, visibility, sky, temperature,
+    // altimeter — and it drops the remarks. DECODE still shows everything.
+    // Position from `row_center` rather than by accumulating, so the row a tap resolves to is the
+    // row that was drawn — by construction, not by two expressions that happen to agree today.
+    for (row, item) in visible().enumerate() {
+        let y = row_center(theme, layout, row);
         let age = now.saturating_duration_since(item.received);
+        let x0 = layout.content_left();
 
-        let mut label = Paint::color(theme.text_primary);
-        label.set_font(&[ui.font()]);
-        label.set_font_size(theme.font_size_small);
-        label.set_text_baseline(Baseline::Middle);
-        label.set_text_align(Align::Left);
+        let mut station = Paint::color(theme.text_primary);
+        station.set_font(&[ui.font()]);
+        station.set_font_size(theme.font_size_small);
+        station.set_text_baseline(Baseline::Middle);
+        station.set_text_align(Align::Left);
+        let _ = canvas.fill_text(x0, y, heading_shown(heading_for(item)), &station);
 
-        // The station leads, in the brightest colour on the row. It used to trail the product
-        // label — every row began with the word METAR, identical and eleven characters wide, so
-        // the eye landed on the one thing that was the same everywhere and had to travel to reach
-        // the one thing that was not.
-        let heading = if item.location.is_empty() {
-            item.product.label().to_string()
-        } else {
-            item.location.clone()
-        };
-        let _ = canvas.fill_text(layout.content_left(), y, &heading, &label);
-
-        let mut x = layout.content_left()
-            + canvas
-                .measure_text(0.0, 0.0, &heading, &label)
-                .map(|m| m.width())
-                .unwrap_or(0.0)
-            + 9.0;
-
-        // Product and distance, both secondary: they say why the row is here and where it sits in
-        // the order, neither of which is what you are scanning for.
-        let mut aside = Paint::color(theme.text_dim);
-        aside.set_font(&[ui.font()]);
-        aside.set_font_size(theme.font_size_tag);
-        aside.set_text_baseline(Baseline::Middle);
-        aside.set_text_align(Align::Left);
-        if !item.location.is_empty() {
-            let mut note = item.product.label().to_string();
-            if let Some(nm) = station_distance_nm(item, ui.chart(), state.ownship.usable_position())
-            {
-                note.push_str(&format!("  {nm:.0} nm"));
-            }
-            let _ = canvas.fill_text(x, y, &note, &aside);
-            x += canvas
-                .measure_text(0.0, 0.0, &note, &aside)
-                .map(|m| m.width())
-                .unwrap_or(0.0)
-                + 9.0;
-        }
+        // One letter for the product. `METAR` was five identical characters at the start of most
+        // rows; at a fixed column a single letter is unambiguous and costs a fifth of the width.
+        let mut kind = Paint::color(theme.text_dim);
+        kind.set_font(&[ui.font()]);
+        kind.set_font_size(theme.font_size_small);
+        kind.set_text_baseline(Baseline::Middle);
+        kind.set_text_align(Align::Left);
+        let _ = canvas.fill_text(x0 + cols.product, y, product_initial(&item.product), &kind);
 
         // Flight category badge — METARs and SPECIs only.
         //
@@ -270,51 +431,55 @@ pub fn draw(
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);
             badge.set_text_align(Align::Left);
-            let _ = canvas.fill_text(x, y, category.label(), &badge);
+            let _ = canvas.fill_text(x0 + cols.category, y, category.label(), &badge);
         }
 
-        // Age on the right, coloured once it is old enough to matter.
-        let mut age_paint = Paint::color(age_colour(ui, age));
-        age_paint.set_font(&[ui.font()]);
-        age_paint.set_font_size(theme.font_size_small);
-        age_paint.set_text_baseline(Baseline::Middle);
-        age_paint.set_text_align(Align::Right);
-        let _ = canvas.fill_text(
-            layout.content_right(),
-            y,
-            format_age(age),
-            &age_paint,
-        );
+        // Distance and age share the right edge, so the report column has a fixed end as well as
+        // a fixed start and every row truncates in the same place.
+        // Tight: `4nm 26s`, not `4 nm  26s`. Three characters of padding here is thirty pixels
+        // taken off the report, which is the difference between a whole METAR and a truncated one.
+        let mut trailing = String::new();
+        if let Some(nm) = station_distance_nm(item, ui.chart(), state.ownship.usable_position()) {
+            trailing.push_str(&format!("{nm:.0}nm "));
+        }
+        trailing.push_str(&format_age(age));
+        let mut trailing_paint = Paint::color(age_colour(ui, age));
+        trailing_paint.set_font(&[ui.font()]);
+        trailing_paint.set_font_size(theme.font_size_small);
+        trailing_paint.set_text_baseline(Baseline::Middle);
+        trailing_paint.set_text_align(Align::Right);
+        let _ = canvas.fill_text(layout.content_right(), y, &trailing, &trailing_paint);
+        let trailing_w = canvas
+            .measure_text(0.0, 0.0, &trailing, &trailing_paint)
+            .map(|m| m.width())
+            .unwrap_or(0.0);
 
-        y += line;
-
-        // Body, indented and truncated to the panel width. Truncated rather than wrapped: a
-        // wrapped TAF can run four lines and push everything else off a 480 px panel, and the
-        // leading groups are the ones that matter at a glance.
+        // The report itself, truncated rather than wrapped: a wrapped TAF can run four lines and
+        // push everything else off a 480 px panel, and the leading groups are the ones that matter.
         let mut body = Paint::color(theme.text_secondary);
         body.set_font(&[ui.font()]);
         body.set_font_size(theme.font_size_small);
         body.set_text_baseline(Baseline::Middle);
         body.set_text_align(Align::Left);
 
-        let indent = layout.content_left() + theme.font_size_small * 1.2;
-        let available = layout.content_right() - indent;
+        let indent = x0 + cols.report;
+        let available = layout.content_right() - trailing_w - REPORT_GAP - indent;
         // Without the prefix the heading already carries — see `body_without_prefix`.
         let shown = body_without_prefix(&item.body, &item.location);
-        draw_body_tokens(ui, canvas, shown, &mut body, indent, y, available);
+        draw_body_tokens(ui, canvas, shown, &mut body, indent, y, available.max(0.0));
 
-        y += line;
-        y += entry_gap(ui);
-        if y > layout.height - layout.footer_height {
-            break;
-        }
+        // `rows_per_page` sized the page to fit, so this should never trip. It is a guard against
+        // the footer being resized without that being revisited, not a normal exit.
+        debug_assert!(y <= layout.height - layout.footer_height);
     }
-
 }
 
 fn draw_empty_notice(ui: &Ui, canvas: &mut Canvas, state: &AppState, layout: &Layout) {
     let theme = &ui.theme;
-    let (cx, cy) = (layout.content_x0 + layout.content_width() * 0.5, layout.height * 0.5);
+    let (cx, cy) = (
+        layout.content_x0 + layout.content_width() * 0.5,
+        layout.height * 0.5,
+    );
 
     // "Nothing yet" is the normal state for minutes after a cold start, because Stratux's
     // /weather socket does not replay its buffer on connect. Saying so avoids it reading as a
@@ -371,7 +536,6 @@ pub fn format_age(age: std::time::Duration) -> String {
         format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
     }
 }
-
 
 /// Draw the report body token by token, colouring the ones that carry a hazard.
 ///
@@ -476,7 +640,12 @@ fn draw_decoded(
             badge.set_font_size(theme.font_size_small);
             badge.set_text_baseline(Baseline::Middle);
             badge.set_text_align(Align::Left);
-            let _ = canvas.fill_text(layout.content_left() + heading_w + 10.0, y, category.label(), &badge);
+            let _ = canvas.fill_text(
+                layout.content_left() + heading_w + 10.0,
+                y,
+                category.label(),
+                &badge,
+            );
         }
     }
 
@@ -488,7 +657,12 @@ fn draw_decoded(
     let _ = canvas.fill_text(
         layout.content_right(),
         y,
-        format!("{} of {}   {}", index + 1, total, format_age(now.saturating_duration_since(item.received))),
+        format!(
+            "{} of {}   {}",
+            index + 1,
+            total,
+            format_age(now.saturating_duration_since(item.received))
+        ),
         &right,
     );
     y += line;
@@ -506,13 +680,18 @@ fn draw_decoded(
 
     let indent = layout.content_left() + theme.font_size_small * 0.8;
     let available = layout.content_right() - indent;
-    y = draw_wrapped_tokens(ui, canvas, &item.body, &mut body, indent, y, available, line);
+    y = draw_wrapped_tokens(
+        ui, canvas, &item.body, &mut body, indent, y, available, line,
+    );
 
     y += line * 0.4;
     let mut separator = Path::new();
     separator.move_to(layout.content_left(), y);
     separator.line_to(layout.content_right(), y);
-    canvas.stroke_path(&separator, &Paint::color(theme.text_dim).with_line_width(1.0));
+    canvas.stroke_path(
+        &separator,
+        &Paint::color(theme.text_dim).with_line_width(1.0),
+    );
     y += line * 0.7;
 
     // --- expansions ---
@@ -730,8 +909,14 @@ mod ordering_tests {
     fn a_body_that_does_not_start_with_the_prefix_is_left_alone() {
         // Never chop at a boundary that is not there. A SPECI under a METAR heading, a report with
         // no station, a station that merely shares a prefix.
-        assert_eq!(body_without_prefix("041551Z 23003KT", "KABE"), "041551Z 23003KT");
-        assert_eq!(body_without_prefix("METARX KABE 1Z", "KABE"), "METARX KABE 1Z");
+        assert_eq!(
+            body_without_prefix("041551Z 23003KT", "KABE"),
+            "041551Z 23003KT"
+        );
+        assert_eq!(
+            body_without_prefix("METARX KABE 1Z", "KABE"),
+            "METARX KABE 1Z"
+        );
         assert_eq!(body_without_prefix("METAR KABEX 1Z", "KABE"), "KABEX 1Z");
         assert_eq!(body_without_prefix("", "KABE"), "");
         assert_eq!(body_without_prefix("METAR", "KABE"), "METAR");
@@ -746,7 +931,10 @@ mod ordering_tests {
         let body: f32 = 480.0 - 36.4 - 30.6 - line;
         let without = (body / (line * 2.0)).floor() as usize;
         let with = (body / (line * 2.0 + ui_gap)).floor() as usize;
-        assert!(with < without, "the gap should cost something: {with} vs {without}");
+        assert!(
+            with < without,
+            "the gap should cost something: {with} vs {without}"
+        );
         assert!(without - with <= 2, "but not more than a couple of entries");
     }
 }
@@ -761,7 +949,10 @@ mod tests {
         // whole panel width, so nothing has to be truncated.
         for count in 1..=20 {
             let (columns, rows) = expansion_layout(count, 24);
-            assert_eq!(columns, 1, "{count} entries should not need a second column");
+            assert_eq!(
+                columns, 1,
+                "{count} entries should not need a second column"
+            );
             assert_eq!(rows, count);
         }
     }
@@ -788,6 +979,32 @@ mod tests {
                 assert!((1..=2).contains(&columns));
             }
         }
+    }
+
+    #[test]
+    fn a_heading_longer_than_the_column_is_cut_to_it() {
+        use super::{heading_shown, HEADING_MAX_CHARS};
+
+        // Stations and the known product names are all inside the cap and must come through
+        // untouched — this is the case that runs on every frame.
+        for intact in ["KMMU", "KSMQ", "METAR", "TAF", "SIGMET", "AIRMET"] {
+            assert_eq!(heading_shown(intact), intact);
+            assert!(intact.chars().count() <= HEADING_MAX_CHARS);
+        }
+
+        // `WeatherProduct::Other` carries whatever the wire said. Without the cap, one long label
+        // would set the column width for the whole page and push the reports off the right edge.
+        assert_eq!(heading_shown("CONVECTIVE SIGMET"), "CONVEC");
+    }
+
+    #[test]
+    fn cutting_a_heading_lands_on_a_character_boundary() {
+        use super::heading_shown;
+
+        // The wire is not guaranteed to be ASCII, and slicing a `str` mid-character panics — on a
+        // page that redraws eight times a second, which would take the whole display down. Seven
+        // characters, so the cut falls inside the multi-byte run rather than before it.
+        assert_eq!(heading_shown("ÅÄÖÜÉÈÊ").chars().count(), 6);
     }
 
     #[test]
