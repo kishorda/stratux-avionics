@@ -29,7 +29,12 @@ OUT="$HERE/source"
 UA="stratux-avionics-chartdata/0.1 (offline display data build)"
 
 OURAIRPORTS="https://davidmegginson.github.io/ourairports-data"
-FAA="https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Class_Airspace/FeatureServer/0"
+FAA_BASE="https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services"
+FAA="$FAA_BASE/Class_Airspace/FeatureServer/0"
+
+# Airports and runways are attribute-heavy but geometrically trivial, so they page far larger than
+# the airspace polygons do.
+FAA_PAGE=2000
 
 # About 2.2 m at these latitudes. Deliberately far below the 10 m the build simplifies to, so the
 # server's generalisation cannot show through in the result — verified at 0.1 m max deviation
@@ -74,6 +79,43 @@ get "$OURAIRPORTS/runways.csv"  "$OUT/runways.csv"  "runways.csv"
 # essentially every field you would actually talk to, and it is what makes the inspect card
 # worth tapping.
 get "$OURAIRPORTS/airport-frequencies.csv" "$OUT/airport-frequencies.csv" "airport-frequencies.csv"
+
+echo
+echo "==> FAA airports and runways"
+# The same server the airspace comes from, so the whole file shares one AIRAC cycle and one
+# authority. US_Airport carries the position (as point geometry, already decimal degrees), the
+# ICAO identifier, elevation, operational status and public/private; Runways carries the
+# designator, length and a COMP_CODE *enum* rather than OurAirports' 564 spellings of "asphalt".
+faa_pages() {
+  local svc="$1" fields="$2" geom="$3" out="$4" page=0 offset=0 dest count url
+  while :; do
+    dest="$OUT/${out}-$(printf '%03d' "$page").json"
+    url="$FAA_BASE/$svc/FeatureServer/0/query?where=1%3D1&outFields=${fields}"
+    url+="&returnGeometry=${geom}&outSR=4326&resultOffset=${offset}&resultRecordCount=${FAA_PAGE}&f=json"
+    get "$url" "$dest" "${svc} offset ${offset}"
+    count="$(python3 -c "
+import json
+print(len(json.load(open('$dest')).get('features',[])))
+")"
+    if [[ "$count" == "0" ]]; then rm -f "$dest"; break; fi
+    # Advance by what came back, NOT by what was asked for. This layer caps a page at 1000 even
+    # when asked for 2000, so stepping by the request size fetched records 0-999, 2000-2999, ...
+    # and silently skipped half the file — 10,000 valid-looking airports out of 19,559.
+    offset=$((offset + count))
+    page=$((page + 1))
+    if (( offset > 60000 )); then
+      echo "!!! $svc did not terminate; stopping at $offset" >&2
+      break
+    fi
+  done
+}
+
+faa_pages US_Airport \
+  "GLOBAL_ID,IDENT,ICAO_ID,NAME,ELEVATION,TYPE_CODE,SERVCITY,STATE,COUNTRY,OPERSTATUS,PRIVATEUSE,IAPEXISTS,MIL_CODE" \
+  true airports-faa
+faa_pages Runways \
+  "AIRPORT_ID,DESIGNATOR,LENGTH,WIDTH,DIM_UOM,COMP_CODE,LIGHTACTV" \
+  false runways-faa
 
 echo
 echo "==> FAA Class Airspace layer metadata"

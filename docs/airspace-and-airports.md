@@ -37,25 +37,36 @@ two-press state machine: the failure that matters is an instrument that lies con
 
 ## Sources
 
-### Airports — OurAirports
+### Airports and runways — FAA AIS
 
-<https://ourairports.com/data/> — `airports.csv` (12.7 MB), `runways.csv` (4.0 MB).
+```
+.../services/US_Airport/FeatureServer/0     19,559 points
+.../services/Runways/FeatureServer/0        23,401 runways
+```
 
-**Public domain**, stated plainly: *"All data is released to the Public Domain, and comes with no
-guarantee of accuracy or fitness for use."* That is the difference that lets the built file be
-committed to this repo, where [`snapshot*.json` cannot be](free-aviation-data.md) — adsb.lol's
-traffic is ODbL, and share-alike does not match this repo's licensing.
+The same server the airspace comes from, so the whole file carries one AIRAC cycle and one
+authority. `Runways.AIRPORT_ID` is a GUID matching `US_Airport.GLOBAL_ID`; the airport geometry is
+already decimal degrees, so nothing is parsed out of the DMS text columns.
 
-85,824 rows worldwide. After keeping `iso_country=US`, dropping Alaska, Hawaii and the unassigned
-region, and dropping `closed` and `balloonport`: **24,048 in CONUS**.
+**This replaced OurAirports**, which fed the layer originally. Four reasons, in order of weight:
 
-A further 3,312 are dropped for having no usable identifier — OurAirports assigns placeholders like
-`US-10378` to fields with no official code, and a symbol labelled `US-10378` is noise on a 7"
-panel. **20,736 airports** reach the file.
+* **The ICAO identifier is real.** OurAirports' `gps_code` is the local code repeated for most
+  fields — `ID15`, `WN43`, `VA10` — which cannot match a METAR and never will. Of the 20,056
+  "stations" the old file carried, only 3,799 were even K-prefixed. Tested against the stations
+  actually reporting across CONUS: **FAA matched 362 of 400, OurAirports 334**, using 2,335 strings
+  instead of 20,056. Coverage fell from 97% to 13% and the join got *better*.
+* **Enums, not free text.** `COMP_CODE` has thirty values. OurAirports' surface column has **564**
+  distinct spellings of things like "asphalt", which the old build prefix-matched.
+* **Stated, not inferred.** `OPERSTATUS` and `PRIVATEUSE` say what the old code guessed from a
+  `type` string, and `DESIGNATOR` gives `05/23` outright instead of it being reconstructed from one
+  end's identifier.
+* **Currency.** Same 28-day cycle as the airspace, rather than whenever someone last edited a wiki.
 
-The label is `local_code` where there is one, else `gps_code`, else `ident`. That gives `MMU`,
-`EWR`, `06N` — what a pilot says, and three or four characters, which is what fits beside a symbol.
-Preferring `ident` would have given `KMMU` and `KEWR`, a third wider for no extra meaning.
+Frequencies still come from OurAirports: the FAA publishes them behind a `Frequencies` → `Services`
+→ airport join covering 2,493 services, where OurAirports has a flat table covering 3,752 airports,
+and the CTAF at a small field is exactly what the FAA table is thinnest on. Both are public domain,
+so carrying two sources costs nothing but the fetch. The two disagree about identifiers — the
+frequency file says `KMMU`, the FAA layer says `MMU` — so every airport is indexed under both.
 
 ### Airspace — FAA AIS
 
@@ -216,147 +227,23 @@ measurement credited it with.
 
 | Tier | What | Population | Drawn at |
 | --- | --- | --- | --- |
-| 0 | large + medium airports | 821 | every range |
-| 1 | small airports, hard runway ≥ 2500 ft | 3,588 | 20 nm and in |
-| 2 | remaining fixed-wing + seaplane bases | 9,617 | 5 nm and in |
-| 3 | heliports | 6,710 | never, by default |
+| 0 | aerodromes worth seeing anywhere: public or military, hard runway ≥ 5000 ft | 1,890 | every range |
+| 1 | any other public or military aerodrome with a paved runway | 2,014 | 20 nm and in |
+| 2 | everything else fixed-wing, including private strips | 8,637 | 5 nm and in |
+| 3 | heliports and balloonports | 5,567 | never, by default |
 
-**The tier-1 threshold was 3000 ft and that was wrong.** Somerset (KSMQ) has a lit 2,739 ft asphalt
-runway, an AWOS and a CTAF — an ordinary field a light aircraft would divert to — and it missed the
-cut by 261 ft, so it only drew inside 5 nm and was reported as missing from the data altogether. It
-was never missing; it was decluttered.
+**There is deliberately no minimum runway length for tier 1**, and getting there took two failures.
+At 3,000 ft it hid Somerset's lit 2,739 ft runway — which is what prompted this whole review, since
+the field was reported as missing from the data when it was merely decluttered. At 2,500 ft it hid
+Palo Alto's 2,443 ft one. Each fix moved the number and left the next field just below it. A
+public-use aerodrome with a paved runway is worth drawing at 20 nm however short the runway is, and
+measured across CONUS that costs exactly **one** extra symbol in the busiest 20 nm view, 14 to 15.
 
-Moving to 2500 promotes 437 airports and costs **two extra symbols** in the busiest 20 nm view
-anywhere in the country, 14 to 16. Runway length is a crude proxy for "worth diverting to" in any
-case: the FAA's own airport layer carries `PRIVATEUSE` and `IAPEXISTS`, either of which would say
-it better.
-
-## What each airport carries
-
-Beyond position and tier, the file holds three things the card and the symbols need. Coverage is
-what decides whether a feature is buildable, so it is measured rather than assumed:
-
-| | Coverage | Notes |
-| --- | --- | --- |
-| Name | 20,736 (100%) | 474 KiB of the file; truncated at 40 bytes on a character boundary |
-| **ICAO station** | **20,056 (97%)** | the join key for weather — see below |
-| Elevation | 96% | from `elevation_ft` |
-| Longest hard runway | — | already used for the tier |
-| **Runway orientations** | **13,104 airports (63%), 15,573 entries** | see below |
-| **Frequencies** | **3,780 airports (18%), 11,199 entries** | `UNI 2646, A/D 1529, AWOS 1320, CTR 993, CTAF 874, TWR 661, GND 602, CLR 489, ATIS 469, APP 215, DEP 130` |
-
-### Orientation comes from the identifier, not the heading column
-
-`runways.csv` has `le_heading_degT`, and it is populated for **under a third** of runways —
-endpoint coordinates likewise, at 32%. `le_ident` is populated for all of them and carries the same
-answer to 10 degrees, which is finer than a tick a few pixels long can show. `"5"` is 050, `"19"` is
-190, and the L/R/C suffixes are ignored. A further 1,041 CONUS runways are named by compass point
-instead (`N`, `NE`, `NW`) — turf strips and seaplane lanes — so those are handled too. Helipads
-(`H1`) have no orientation and get none.
-
-Parallel and reciprocal runways collapse: 9L and 9R are one line drawn twice, and so are 05 and 23.
-That takes KORD's eleven runways down to the handful of distinct angles worth drawing. The maximum
-anywhere is six; 10,217 airports have exactly one.
-
-### Weather on the card is a join, not a new source
-
-METARs are already on board. They arrive over the Stratux `/weather` socket and sit in `AppState`
-keyed by station, which is exactly what the card needs — so tapping an airport costs one lookup and
-no fetch, and it works with no internet on the aircraft.
-
-The join key is the problem. METARs are keyed `KMMU`; the symbol says `MMU`, because the label is
-deliberately the short one a pilot says. Deriving one from the other by prepending `K` is right most
-of the time and **silently wrong sometimes**, and wrong here means showing another airport's
-weather. So the ICAO identifier is carried in the file as its own field — the reason for format v3.
-
-Coverage, which decides whether the feature ever shows anything:
-
-| | |
-| --- | --- |
-| `gps_code` | 82% of CONUS fields |
-| Major airports (large + medium) | **821 of 821** |
-| Fields with an AWOS, ASOS or ATIS | **99%** |
-
-Those last two are the numbers that matter — a field with no weather station has no METAR to join
-to, so an empty identifier there costs nothing.
-
-Two of the 821 majors needed a guarded last resort. Bakersfield (`KL45`) and Miami Homestead
-(`KX51`) carry their ICAO code only in `ident`, with both dedicated columns empty. `ident` is
-accepted **only when it looks like a US ICAO identifier** — four characters beginning with `K` —
-because taking it unconditionally would give `7N7` a station of `7N7`, which is not an identifier
-and could only ever match the wrong thing.
-
-The card shows the flight category badge, **wind**, ceiling, visibility, how long ago the report
-arrived, and whether a TAF is also on board. `metar::summarise` never guesses: when neither ceiling
-nor visibility can be read the card names the product instead of showing a badge, because implying
-VFR from a report that could not be parsed is the failure worth designing out.
-
-Wind comes first on the line, ahead of ceiling and visibility. The card already names the runways
-two lines above, and wind against runway is the pairing a pilot is reading for.
-
-Three things about the wind group are worth stating, because each is a way to be quietly wrong:
-
-* **`36010KT` is not `00010KT`.** 360 is not folded to 0 — a pilot reads 360 as from the north, and
-  `000` is how the calm group is spelled. Collapsing them makes a 10 kt northerly look like no wind.
-* **Calm carries no direction.** `00000KT` renders as `CALM`, not as "from 000 degrees", which is a
-  direction the observation does not claim.
-* **The unit is read, not assumed.** US reports are in knots, but the group may legitimately arrive
-  as `MPS` or `KMH`. Reading 8 metres per second as 8 knots halves it — the same shape of error as
-  taking a flight level for feet, and just as invisible on a display.
-
-The parser matches the group's *shape* rather than searching for one, which is the same discipline
-the weather-phenomena matcher already uses. `R04L/2000FT`, `M08`, `10SM` and `A2993` all look
-wind-adjacent and none of them parse.
-
-### Two traps in the frequency file
-
-**Kilohertz, not megahertz.** 121.975 is a real 25 kHz channel, and stored as a float it formats as
-121.97 or 121.98 depending on which way it lands — one click off.
-
-**One radio is often listed twice.** At a non-towered field CTAF and UNICOM are usually the same
-number; at a towered one, so are CTAF and TWR. They are collapsed, and **tower wins over CTAF**
-even though CTAF sorts first for display: Rocky Mountain Metro publishes 118.6 under both names,
-and labelling a live tower frequency "CTAF" invites self-announcing on it.
-
-Anything the builder cannot name is carried but **not shown on the card**. A number with no label
-on an avionics display invites tuning a radio to it without knowing who answers. That is why `A/D`
-(airport advisory, 1,529 entries) and `CNTR` (ARTCC, 993) were given names of their own rather than
-left in the catch-all — they were its two biggest members, and both reach the card.
-
-## File format
-
-One file, `conus.chart`, built on the dev machine and read once at startup. The Pi parses nothing:
-the format is fixed-layout little-endian so loading is a read into a `Vec`, and records are decoded
-on demand — a query allocates only the handful of results it returns.
-
-```
-header         96 B   magic "AVCHART1", version, counts, section offsets,
-                      grid origin and extent, FAA effective date
-bucket grid     8 B   per 1°x1° cell: airport_first, airport_count
-airports       48 B   lat/lon (i32 micro-degrees), 8-byte label, 8-byte ICAO
-                      station, elevation, longest hard runway, kind, tier,
-                      flags, and ranges into the runway, frequency and string
-                      tables
-airspace       40 B   bounding box, ring range, class, flags, lower/upper ft, label
-rings           8 B   vertex_first, vertex_count
-vertices        8 B   lat/lon, i32 micro-degrees
-runways         4 B   heading, length — one per distinct orientation
-frequencies     8 B   kHz, kind
-strings          -    airport names, UTF-8, addressed by offset and length
-```
-
-**Version 2** added the runway, frequency and string sections and the name; **version 3** added the
-ICAO station. The reader refuses any other version outright rather than guessing at a layout — a v2
-file read as v3 would take the elevation out of the middle of the station identifier.
-
-Micro-degrees give about 0.11 m of latitude resolution, which is two orders of magnitude finer than
-the 10 m simplification tolerance and therefore free of consequence.
-
-**Airports are bucketed, airspace is not.** A 1°x1° grid over CONUS is 1,534 cells and makes the
-airport query O(cells touched) instead of a scan of 20,736 records — at 30 Hz a full scan is
-several hundred thousand bounding-box tests a second, which is the same order as the entire current
-frame cost. Airspace is only 1,486 polygons with bounding boxes already in the record, so a linear
-scan is a few microseconds and a second index would be machinery earning nothing.
+**Military fields count as public here.** 255 of the 276 military aerodromes are flagged
+`PRIVATEUSE`, which is accurate and irrelevant: reading it literally demoted Edwards,
+Wright-Patterson, Oceana and Vance to the 5 nm band. A 15,000 ft military runway is the most
+conspicuous thing for miles and usually has controlled airspace stacked on it. The reason to draw
+it is not that you might land there.
 
 ## Tapping an airport, and the rule it bends
 

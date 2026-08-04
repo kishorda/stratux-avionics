@@ -749,7 +749,7 @@ mod tests {
         let Some(chart) = conus() else {
             panic!("crates/avionics-ui/data/conus.chart is missing or unreadable");
         };
-        assert_eq!(chart.airport_count(), 20_736);
+        assert_eq!(chart.airport_count(), 18_108);
         assert_eq!(chart.airspace_count(), 1_408);
         // 2026-07-09, as the FAA layer reported it when the file was built.
         assert_eq!(chart.effective_days(), 20_643);
@@ -767,7 +767,8 @@ mod tests {
             .find(|a| a.label() == "MMU")
             .expect("MMU");
 
-        assert_eq!(chart.name(&mmu), "Morristown Municipal Airport");
+        // The FAA's own name, which is shorter than OurAirports' was.
+        assert_eq!(chart.name(&mmu), "Morristown Muni");
         // The join key for weather, and deliberately not the label the symbol shows.
         assert_eq!(mmu.station(), "KMMU");
         assert_eq!(mmu.label(), "MMU");
@@ -842,16 +843,20 @@ mod tests {
                 runways += 1;
             }
         }
-        assert_eq!(freqs, 11_199, "every frequency in the file should be reachable");
-        assert_eq!(runways, 15_573, "every runway orientation should be reachable");
-        assert!(names > 20_000, "only {names} airports have a name");
+        assert_eq!(freqs, 11_185, "every frequency in the file should be reachable");
+        assert_eq!(runways, 14_926, "every runway orientation should be reachable");
+        assert_eq!(names, 18_108, "every airport should carry a name");
     }
 
     #[test]
-    fn station_identifiers_cover_the_fields_that_actually_report() {
-        // Weather is joined on this, so its coverage decides whether the card ever shows any.
-        // 82% overall is unremarkable; 100% of the major fields is the number that matters, since
-        // those are the ones with a METAR.
+    fn station_identifiers_are_real_icao_codes_rather_than_plentiful() {
+        // Coverage here went *down* on purpose, from 97% to 13%, and that was the point of moving
+        // to the FAA source. The old field was OurAirports' `gps_code`, which for most airports is
+        // the local code repeated — `ID15`, `WN43` — strings that cannot match a METAR and never
+        // will. Against the stations actually reporting across CONUS the new set matched 362 of
+        // 400 and the old one 334, using 2,335 strings instead of 20,056.
+        //
+        // So the assertion is about shape and about the fields that matter, not about volume.
         let Some(chart) = conus() else { return };
         let mut with_station = 0usize;
         let mut major = 0usize;
@@ -860,7 +865,7 @@ mod tests {
             let airport = chart.airport_at(index).expect("index in range");
             let station = airport.station();
             if !station.is_empty() {
-                assert!(station.len() <= 8, "{station} is too long for the field");
+                assert_eq!(station.len(), 4, "{station} is not a four-character identifier");
                 assert!(
                     station.chars().all(|c| c.is_ascii_alphanumeric()),
                     "{station} is not an identifier"
@@ -874,12 +879,13 @@ mod tests {
                 }
             }
         }
+        assert!(with_station > 2_000, "only {with_station} real ICAO codes");
+        // Not all of them: 12% of Major-tier fields are military or civil aerodromes the FAA has
+        // not assigned an ICAO code to, and inventing one is exactly what this replaced.
         assert!(
-            with_station * 100 / chart.airport_count() >= 80,
-            "only {with_station} of {} have a station",
-            chart.airport_count()
+            major_with_station * 100 / major >= 85,
+            "only {major_with_station} of {major} major fields have a station"
         );
-        assert_eq!(major_with_station, major, "every major field needs a station");
     }
 
     #[test]

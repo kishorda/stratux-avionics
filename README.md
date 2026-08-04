@@ -166,8 +166,9 @@ A card changes no selection, hides no traffic, needs a tap within 18 px of a sym
 dismissed by any next tap, and lapses by itself after 20 seconds. The reasoning is in
 [the design note](docs/airspace-and-airports.md#tapping-an-airport-and-the-rule-it-bends).
 
-The data is built by [`tools/chartdata`](tools/chartdata) from OurAirports and the FAA's Class
-Airspace layer, both public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
+The data is built by [`tools/chartdata`](tools/chartdata) from the FAA's own `US_Airport`,
+`Runways` and `Class_Airspace` layers, with communication frequencies from OurAirports — all
+public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
 for the measurements behind every threshold, including why a Class D arrives as 3,256 vertices and
 leaves as 84, and why the frequency file stores kilohertz.
 
@@ -343,9 +344,9 @@ device.
 | M5 | Weather: text page + NEXRAD underlay | **renders on the panel**; **no FIS-B received on the ground yet** — 978 needs altitude, so still unvalidated |
 | M6 | Kiosk hardening | **scripts written, none run on hardware yet** |
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
-| M7 | Airports + airspace map layer | **on the panel** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; installed on the Pi 2026-08-03 and measured on the real VC4 under GLES 2.0 |
+| M7 | Airports + airspace map layer | **on the panel** — 18,108 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; all from the FAA's own layers on one AIRAC cycle, measured on the real VC4 under GLES 2.0 |
 
-384 tests passing, clippy clean.
+374 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a

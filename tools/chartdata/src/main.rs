@@ -19,6 +19,7 @@
 
 mod airports;
 mod airspace;
+mod faa;
 mod csvread;
 mod format;
 mod simplify;
@@ -101,61 +102,47 @@ fn main() -> Result<()> {
 fn build(source: &Path, out: &Path) -> Result<()> {
     println!("==> Reading {}", source.display());
 
-    let airports_csv = read(&source.join("airports.csv"))?;
-    let runways_csv = read(&source.join("runways.csv"))?;
-    let frequencies_csv = read(&source.join("airport-frequencies.csv"))?;
+    // Frequencies are all that is still read from OurAirports; see `airports.rs`.
+    let frequencies = airports::frequency_index(
+        &read(&source.join("airport-frequencies.csv"))?,
+        &read(&source.join("airports.csv"))?,
+    )?;
+
+    let airport_pages = pages_named(source, "airports-faa-")?;
+    let runway_pages = pages_named(source, "runways-faa-")?;
     let (airport_records, airport_stats) =
-        airports::parse(&airports_csv, &runways_csv, &frequencies_csv)?;
+        faa::parse(&airport_pages, &runway_pages, &frequencies)?;
 
     println!(
-        "    airports.csv        {} rows -> {} kept",
-        airport_stats.read, airport_stats.kept
+        "    FAA US_Airport ({} pages)  {} features -> {} kept",
+        airport_pages.len(),
+        airport_stats.read,
+        airport_stats.kept
     );
     println!(
-        "        dropped: {} outside CONUS, {} closed or balloonport, {} no usable identifier, \
-{} no position",
+        "        dropped: {} outside CONUS, {} not operational, {} no position, {} no identifier",
         airport_stats.dropped_non_conus,
-        airport_stats.dropped_closed,
-        airport_stats.dropped_unlabelled,
-        airport_stats.dropped_bad_position
+        airport_stats.dropped_not_operational,
+        airport_stats.dropped_no_position,
+        airport_stats.dropped_no_ident
     );
     println!(
-        "        {} frequencies at {} airports ({:.0}%), {} runway orientations at {} ({:.0}%)",
+        "        {} with an ICAO station ({:.0}%), {} frequencies at {} airports, \
+{} runway orientations at {}",
+        airport_stats.with_station,
+        100.0 * airport_stats.with_station as f64 / airport_stats.kept.max(1) as f64,
         airport_stats.frequencies,
         airport_stats.with_frequencies,
-        100.0 * airport_stats.with_frequencies as f64 / airport_stats.kept.max(1) as f64,
         airport_stats.runway_headings,
         airport_stats.with_runway_headings,
-        100.0 * airport_stats.with_runway_headings as f64 / airport_stats.kept.max(1) as f64,
     );
 
-    let mut pages = Vec::new();
-    let mut names: Vec<PathBuf> = std::fs::read_dir(source)
-        .with_context(|| format!("listing {}", source.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("airspace-") && n.ends_with(".json") && n != "airspace-meta.json")
-        })
-        .collect();
-    // Sorted so the input order is fixed regardless of what the filesystem hands back. `parse`
-    // sorts its output too, but a build should not depend on that to be reproducible.
-    names.sort();
-    if names.is_empty() {
-        bail!(
-            "no airspace pages in {}; run fetch-chartdata.sh first",
-            source.display()
-        );
-    }
-    for name in &names {
-        pages.push(read(name)?);
-    }
+    let pages = pages_named(source, "airspace-")?;
 
     let (airspace_records, airspace_stats) = airspace::parse(&pages)?;
     println!(
         "    airspace ({} pages)  {} features -> {} kept",
-        names.len(),
+        pages.len(),
         airspace_stats.read,
         airspace_stats.kept
     );
@@ -308,6 +295,30 @@ fn inspect(path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Read every `<prefix>NNN.json` page in `dir`, in name order.
+///
+/// Sorted so the input order is fixed regardless of what the filesystem hands back. The parsers
+/// sort their output too, but a build should not have to depend on that to be reproducible.
+fn pages_named(dir: &Path, prefix: &str) -> Result<Vec<String>> {
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("listing {}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.starts_with(prefix) && n.ends_with(".json") && n != "airspace-meta.json"
+            })
+        })
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        bail!(
+            "no {prefix}* pages in {}; run fetch-chartdata.sh first",
+            dir.display()
+        );
+    }
+    names.iter().map(|n| read(n)).collect()
 }
 
 fn read(path: &Path) -> Result<String> {
