@@ -594,14 +594,36 @@ fn altitude_source(state: &AppState) -> AltSource {
 /// Bottom-left of the attitude area: clear of the roll pointer at the top, which it overprinted,
 /// and clear of the heading box at the bottom centre, which it also overprinted. Left-aligned
 /// rather than centred so it cannot collide with either as the layout changes.
+///
+/// # Why it has a backing box
+///
+/// It cannot avoid the pitch ladder. The ladder is drawn at whatever pitch the aircraft is at, so
+/// there is no fixed corner of the attitude area that is reliably empty — and when the text grew
+/// with the rest of the panel it landed squarely on the -30 rung. A caution annunciator that is
+/// sometimes illegible is worse than one that costs a little of the horizon, which is why every
+/// EFIS draws these on a filled field.
 fn draw_banner(ui: &Ui, canvas: &mut Canvas, x: f32, y: f32) {
     let theme = &ui.theme;
+    const TEXT: &str = "AHRS \u{2014} NOT FOR PRIMARY REFERENCE";
+
     let mut paint = Paint::color(theme.caution);
     paint.set_font(&[ui.font()]);
     paint.set_font_size(theme.font_size_tag);
     paint.set_text_align(Align::Left);
     paint.set_text_baseline(Baseline::Bottom);
-    let _ = canvas.fill_text(x, y, "AHRS \u{2014} NOT FOR PRIMARY REFERENCE", &paint);
+
+    let width = canvas
+        .measure_text(0.0, 0.0, TEXT, &paint)
+        .map(|m| m.width())
+        .unwrap_or(0.0);
+    let pad = 4.0;
+    let height = theme.font_size_tag * 1.35;
+
+    let mut box_path = Path::new();
+    box_path.rect(x - pad, y - height, width + pad * 2.0, height + pad * 0.5);
+    canvas.fill_path(&box_path, &Paint::color(theme.target_outline));
+
+    let _ = canvas.fill_text(x, y, TEXT, &paint);
 }
 
 #[cfg(test)]

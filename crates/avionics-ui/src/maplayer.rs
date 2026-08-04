@@ -58,24 +58,23 @@ const TICK_MAX_PX: f32 = 26.0;
 
 /// Inspect card size. Four lines of small text plus padding, and narrow enough that it occupies
 /// the lower-left corner rather than a whole edge — 290 of the 608 px of content area.
-const CARD_W: f32 = 290.0;
-const CARD_H: f32 = 76.0;
+const CARD_W: f32 = 336.0;
+const CARD_H: f32 = 88.0;
 /// With a weather line. The card grows rather than reserving a row that is empty at four fields
 /// in five.
-const CARD_H_WX: f32 = 92.0;
+const CARD_H_WX: f32 = 107.0;
 
 /// Where the weather line's text starts, past the category badge. A fixed column rather than a
 /// measured one: `LIFR` is the widest label, and a measured indent would shuffle the line sideways
 /// every time the weather changed category.
-const CATEGORY_COLUMN_PX: f32 = 34.0;
+const CATEGORY_COLUMN_PX: f32 = 40.0;
 
-/// Frequencies shown on the card. Four fits the width; the file already sorts them so the four
-/// that matter come first.
-const MAX_CARD_FREQS: usize = 4;
+/// Separator between frequency entries on the card.
+const FREQ_SEPARATOR: &str = "  ";
 
 /// Baseline of each card row, from the top of the card. Named rather than written twice, so the
 /// layout test cannot drift away from what the drawing actually does.
-const CARD_ROWS: [f32; 5] = [14.0, 30.0, 46.0, 62.0, 78.0];
+const CARD_ROWS: [f32; 5] = [16.0, 35.0, 53.0, 71.0, 90.0];
 
 /// What the layer put on screen. Folded into [`crate::FrameStats`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -487,15 +486,18 @@ pub fn draw_inspect(
         .into_iter()
         .filter(|f| !f.kind.label().is_empty())
         .collect();
+    // How many fit is *measured*, not assumed. A fixed count was right at one font size and wrong
+    // at the next: bold at 13 px pushed `APP 127.6` past the card's right border and out over the
+    // plan view. The file already sorts these most-useful-first, so dropping from the end drops
+    // the least useful.
     let text = if freqs.is_empty() {
         "no published frequency".to_string()
     } else {
-        freqs
+        let entries: Vec<String> = freqs
             .iter()
-            .take(MAX_CARD_FREQS)
             .map(|f| format!("{} {}", f.kind.label(), f.mhz_text()))
-            .collect::<Vec<_>>()
-            .join("  ")
+            .collect();
+        fit_entries(canvas, &entries, &line_paint(ui), width - pad * 2.0)
     };
     let colour = if freqs.is_empty() {
         theme.text_dim
@@ -532,6 +534,44 @@ pub fn draw_inspect(
             &paint,
         );
     }
+}
+
+/// The paint the card's body lines are drawn in. Shared so a measurement and the drawing that
+/// follows it cannot disagree about the font.
+fn line_paint(ui: &Ui) -> Paint {
+    let mut paint = Paint::color(ui.theme.text_primary);
+    paint.set_font(&[ui.font()]);
+    paint.set_font_size(ui.theme.font_size_tag);
+    paint.set_text_baseline(Baseline::Middle);
+    paint.set_text_align(Align::Left);
+    paint
+}
+
+/// Join as many entries as fit in `available` pixels, in order.
+///
+/// Always keeps at least the first, even when it alone is too wide: a card showing one frequency
+/// that runs a little long is more use than a card showing none, and the caller has already put
+/// the most useful one first.
+fn fit_entries(canvas: &mut Canvas, entries: &[String], paint: &Paint, available: f32) -> String {
+    let measure = |canvas: &mut Canvas, text: &str| {
+        canvas
+            .measure_text(0.0, 0.0, text, paint)
+            .map(|m| m.width())
+            .unwrap_or(f32::MAX)
+    };
+
+    let mut out = match entries.first() {
+        Some(first) => first.clone(),
+        None => return String::new(),
+    };
+    for entry in entries.iter().skip(1) {
+        let candidate = format!("{out}{FREQ_SEPARATOR}{entry}");
+        if measure(canvas, &candidate) > available {
+            break;
+        }
+        out = candidate;
+    }
+    out
 }
 
 /// Everything on the weather line except the category badge, which carries its own colour and is
@@ -995,11 +1035,63 @@ mod tests {
         assert!(line.contains("090\u{00B0} 05"), "{line}");
     }
 
+    /// Stand-in for `Canvas::measure_text`, so the fitting *rule* is testable without a GPU.
+    ///
+    /// Deliberately not an attempt to reproduce the real font — a per-character average is wrong
+    /// for a string of digits and capitals, and an earlier version of this test used one close
+    /// enough to look right and disagree with what the panel actually did. The widths below are
+    /// chosen to make the arithmetic unambiguous; the real fit is measured at draw time.
+    fn fit_with(entries: &[&str], per_char: f32, available: f32) -> String {
+        let entries: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+        let mut out = match entries.first() {
+            Some(f) => f.clone(),
+            None => return String::new(),
+        };
+        for entry in entries.iter().skip(1) {
+            let candidate = format!("{out}{FREQ_SEPARATOR}{entry}");
+            if candidate.chars().count() as f32 * per_char > available {
+                break;
+            }
+            out = candidate;
+        }
+        out
+    }
+
+    #[test]
+    fn the_frequency_line_drops_entries_from_the_least_useful_end() {
+        // The file sorts most-useful-first, so dropping from the end drops APP before CTAF. A
+        // fixed count was right at one font size and wrong at the next — bold at 13 px pushed
+        // `APP 127.6` past the card border and out over the plan view.
+        let all = ["TWR 118.1", "GND 121.7", "ATIS 124.25", "APP 127.6"];
+        // 10 px a character: three entries are 33 characters and fit in 340; four are 44 and do not.
+        assert_eq!(
+            fit_with(&all, 10.0, 340.0),
+            "TWR 118.1  GND 121.7  ATIS 124.25",
+            "the fourth should be dropped, not the first"
+        );
+        assert_eq!(
+            fit_with(&all, 10.0, 1000.0),
+            "TWR 118.1  GND 121.7  ATIS 124.25  APP 127.6",
+            "all four when there is room"
+        );
+        assert_eq!(fit_with(&all, 10.0, 210.0), "TWR 118.1  GND 121.7");
+        assert_eq!(fit_with(&all, 10.0, 100.0), "TWR 118.1", "tower survives longest");
+    }
+
+    #[test]
+    fn one_entry_too_wide_is_still_shown() {
+        // A card with one frequency running a little long is more use than a card with none, and
+        // the caller has already put the most useful one first.
+        assert_eq!(fit_with(&["CTAF 122.8"], 6.6, 10.0), "CTAF 122.8");
+        assert_eq!(fit_with(&[], 6.6, 500.0), "");
+    }
+
     #[test]
     fn the_worst_weather_line_still_fits_the_card() {
-        // Measured at 5.5 px per character for this font at `font_size_tag` on the rendered panel.
+        // Measured at 6.6 px per character for the bold face at `font_size_tag` on the rendered
+        // panel. It was 5.5 at the old regular 11 px; both the size and the weight moved.
         // The budget matters because the line grew once already and would grow again silently.
-        const PX_PER_CHAR: f32 = 5.5;
+        const PX_PER_CHAR: f32 = 6.6;
         let worst = line_for(
             "METAR KAAA 021656Z 36025G40KT 1/4SM FG VV001 M01/M02 A2960",
             Duration::from_secs(72 * 60),

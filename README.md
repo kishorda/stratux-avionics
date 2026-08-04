@@ -345,7 +345,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **on the panel** — 20,736 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; installed on the Pi 2026-08-03 and measured on the real VC4 under GLES 2.0 |
 
-382 tests passing, clippy clean.
+384 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -722,7 +722,8 @@ sudo ./powercut-check.sh baseline   # before starting the power-cut runs
 sudo ./overlay.sh enable            # read-only root, last because it freezes settings
 ```
 
-`avionics --check` verifies the font, the DRM connectors and modes, the touch device and whether
+`avionics --check` verifies the font, the DRM connectors and modes, the touch device, the airport
+and airspace file, and whether
 Stratux is reachable — and does it **without taking DRM master or the console**, so it is safe to
 run over SSH while something else is on screen. It is also wired as `ExecStartPre=`, so a missing
 font or a loose DSI ribbon fails with a clear journal message instead of a black panel.
@@ -761,6 +762,12 @@ the fix landed. The cost is a minute of near-empty frames at the front.
   to start.
 - **The font is copied to `/opt/avionics/assets/`, not symlinked.** A display that cannot draw text
   because an unrelated `apt autoremove` took `fonts-dejavu-core` is a reliability bug.
+- **The bold face is preferred**, and that is a legibility decision rather than a style one. Live
+  testing on the panel reported the text as small and unclear; at the sizes this display uses, a
+  regular-weight stem is *one pixel* on a 133 PPI screen, so antialiasing and daylight are both
+  eating a large fraction of the only pixel the letter has. Bold draws two. The theme's sizes went
+  up at the same time — 11/14 to 14/17 — which costs 11 px of ring radius and 2 px of soft-key
+  height, both affordable.
 - **The journal is volatile and capped at 32 MB.** Logs survive until reboot — long enough to
   diagnose a flight — and the SD card lasts much longer for it. This matters more once the root
   filesystem is read-only, since the journal then lives in the RAM overlay.

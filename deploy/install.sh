@@ -64,8 +64,15 @@ echo "    binary: $BINARY"
 
 # --- font --------------------------------------------------------------------------------
 step "Installing the font outside apt's reach"
+# Bold first, matching crates/avionics-ui/src/font.rs. At the sizes this display uses a
+# regular-weight stem is one pixel on a 133 PPI panel; bold draws two, which is what survives
+# antialiasing and daylight. The unit pins AVIONICS_FONT at the copy installed here, so this list
+# is what actually decides the face on the aircraft.
 FONT_SOURCE=""
 for candidate in \
+  /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
+  /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf \
+  /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf \
   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
   /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf \
   /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf

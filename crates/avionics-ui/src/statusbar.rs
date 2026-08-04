@@ -160,7 +160,7 @@ pub fn draw(
         } else {
             theme.text_secondary
         };
-        let _ = field(
+        cursor = field(
             ui,
             canvas,
             cursor,
@@ -172,7 +172,9 @@ pub fn draw(
     }
 
     // --- Right-hand side: whatever is currently wrong ---
-    draw_alarms(ui, canvas, state, now, layout, baseline);
+    // `cursor` is where the left-hand fields actually ended, which is the only honest limit for
+    // the alarms to stop at. It moves with the font size, and the fields themselves come and go.
+    draw_alarms(ui, canvas, state, now, layout, baseline, cursor);
 }
 
 /// Draw "LABEL value" and return the x cursor for the next field.
@@ -235,6 +237,9 @@ fn radio_colour(ui: &Ui, rate: u32, fresh: bool) -> Color {
     }
 }
 
+/// Clear space kept between the last left-hand field and the first alarm.
+const ALARM_GAP: f32 = 14.0;
+
 /// Right-aligned list of current problems, most severe first. Empty when all is well — a status
 /// bar that always shows something to worry about trains the pilot to stop reading it.
 fn draw_alarms(
@@ -244,6 +249,7 @@ fn draw_alarms(
     now: Instant,
     layout: &Layout,
     baseline: f32,
+    left_end: f32,
 ) {
     let theme = &ui.theme;
     let mut messages: Vec<(String, Color)> = Vec::new();
@@ -294,11 +300,17 @@ fn draw_alarms(
             .measure_text(0.0, 0.0, &text, &paint)
             .map(|m| m.width())
             .unwrap_or(0.0);
-        let _ = canvas.fill_text(x, baseline, &text, &paint);
-        x -= width + 12.0;
-        // Stop before running into the left-hand fields rather than overprinting them.
-        if x < layout.width * 0.45 {
+
+        // Checked *before* drawing, and against where the left-hand fields actually ended.
+        //
+        // Both halves of that were wrong. The old guard tested `layout.width * 0.45` — a fixed
+        // fraction unrelated to the fields, which the busiest line already passed at the old font
+        // size and passes by 237 px at the new one. And it tested *after* `fill_text`, so the
+        // message that broke the loop had already been painted over the fields it was avoiding.
+        if x - width < left_end + ALARM_GAP {
             break;
         }
+        let _ = canvas.fill_text(x, baseline, &text, &paint);
+        x -= width + 12.0;
     }
 }

@@ -64,6 +64,21 @@ pub struct Theme {
     pub airport: Color,
     pub airport_label: Color,
 
+    /// # Sizes, and why they are what they are
+    ///
+    /// Raised across the board after live testing on the panel reported the text as small and
+    /// unclear. The 800x480 panel is 7" diagonal, so about 133 PPI: at the old 11 px the cap
+    /// height measured **8 pixels** on a rendered frame, which is roughly 1.5 mm and about half
+    /// what is comfortable at arm's length in a cockpit.
+    ///
+    /// The sizes are not free. Everything in [`crate::Layout`] derives from them — the status bar
+    /// is `font_size_small * 2.6`, the footer `font_size_normal * 1.8`, and the ring radius pays
+    /// for both plus `font_size_small * 1.6` of label clearance. Going from 11/14 to 14/17 costs
+    /// 11 px of ring radius (187.5 to 176.1) and 2 px of soft-key height, which still clears the
+    /// 60 px hittability floor with room.
+    ///
+    /// `font_size_tag` stays below `font_size_small` deliberately: it is the traffic labels, and
+    /// they are the one text on the panel that competes with itself for space.
     pub font_size_tag: f32,
     pub font_size_small: f32,
     pub font_size_normal: f32,
@@ -94,10 +109,13 @@ impl Theme {
             target_alert: Color::rgb(255, 80, 60),
             target_outline: Color::rgb(8, 10, 14),
 
-            tag_text: Color::rgb(205, 222, 235),
+            tag_text: Color::rgb(214, 230, 242),
             text_primary: Color::rgb(235, 245, 255),
-            text_secondary: Color::rgb(160, 185, 205),
-            text_dim: Color::rgb(105, 125, 145),
+            // Both lifted with the sizes, for the same reason. Against the (8, 10, 14) background
+            // the old `text_dim` was about 4.4:1 — fine on a desk, thin behind a windscreen, and
+            // it is what the status bar's field labels and the footer hints are drawn in.
+            text_secondary: Color::rgb(182, 202, 220),
+            text_dim: Color::rgb(138, 158, 178),
 
             good: Color::rgb(120, 235, 160),
             caution: Color::rgb(255, 195, 60),
@@ -110,10 +128,10 @@ impl Theme {
             airport: Color::rgb(150, 172, 188),
             airport_label: Color::rgba(162, 184, 200, 220),
 
-            font_size_tag: 11.0,
-            font_size_small: 11.0,
-            font_size_normal: 14.0,
-            font_size_large: 19.0,
+            font_size_tag: 13.0,
+            font_size_small: 14.0,
+            font_size_normal: 17.0,
+            font_size_large: 23.0,
 
             symbol_size: 9.0,
             line_width: 1.6,

@@ -278,10 +278,16 @@ mod tests {
         // the page or to the page strip. The old version of this test asserted the mirror image
         // and would have passed unchanged against a strip that had not moved at all.
         let l = layout();
-        assert_eq!(hit(&l, l.content_x0, 100.0), None, "content area");
-        assert_eq!(hit(&l, l.content_x1 + 5.0, 100.0), None, "page strip");
-        assert_eq!(hit(&l, l.width - 1.0, 100.0), None);
-        assert_eq!(hit(&l, l.content_x0 - 1.0, 100.0), Some(1), "inside the strip");
+        // Probe the centre of slot 1 rather than a fixed y. The strip's top moves with the status
+        // bar height, which moves with the font size — a hardcoded 100.0 silently changed which
+        // slot it was testing the first time the text got bigger.
+        let (_, y, _, h) = slot_rect(&l, 1);
+        let mid = y + h * 0.5;
+
+        assert_eq!(hit(&l, l.content_x0, mid), None, "content area");
+        assert_eq!(hit(&l, l.content_x1 + 5.0, mid), None, "page strip");
+        assert_eq!(hit(&l, l.width - 1.0, mid), None);
+        assert_eq!(hit(&l, l.content_x0 - 1.0, mid), Some(1), "inside the strip");
     }
 
     #[test]
