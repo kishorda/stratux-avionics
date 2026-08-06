@@ -205,6 +205,11 @@ pub fn parse(
                 kind,
                 tier,
                 flags,
+                // Filled by a later pass, which is where the effective date lives. The FAA layer
+                // does not carry variation — checked: `US_Airport` has 26 fields and none of them
+                // is magnetic, and `Runways` carries no bearing at all — so it is modelled rather
+                // than read. See `crate::variation`.
+                mag_var_deg: 0,
                 runways: headings,
                 frequencies: freqs,
             });

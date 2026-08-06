@@ -23,6 +23,7 @@ mod csvread;
 mod faa;
 mod format;
 mod simplify;
+mod variation;
 
 use std::path::{Path, PathBuf};
 
@@ -160,6 +161,24 @@ fn build(source: &Path, out: &Path) -> Result<()> {
     );
 
     let effective_days = effective_days(&source.join("airspace-meta.json"))?;
+
+    // Magnetic variation, once the effective date is known, so it ages with the cycle rather than
+    // with the clock of whoever ran the build.
+    let mut airport_records = airport_records;
+    let var_stats = apply_variation(&mut airport_records, effective_days);
+    println!(
+        "    variation    {} airports, {} to {} degrees (east-positive)",
+        var_stats.computed, var_stats.min, var_stats.max
+    );
+    if var_stats.failed > 0 {
+        // Not fatal — an airport with no variation still draws, and its runway components are
+        // suppressed rather than wrong. But it must be said out loud: a silent zero here is the
+        // exact failure this whole field exists to prevent.
+        println!(
+            "        WARNING: {} airports kept variation 0 because the model refused them",
+            var_stats.failed
+        );
+    }
 
     let chart = format::Chart {
         effective_days,
@@ -335,6 +354,27 @@ fn read(path: &Path) -> Result<String> {
             path.display()
         )
     })
+}
+
+/// Fill in every airport's magnetic variation from the World Magnetic Model.
+///
+/// A position the model refuses keeps variation 0 and is counted. That is deliberately *not*
+/// treated as "no correction needed": the display gates on the count of runways it can correct, so
+/// a zero here suppresses the wind components at that field rather than showing uncorrected ones.
+fn apply_variation(airports: &mut [format::Airport], effective_days: u32) -> variation::Stats {
+    let mut stats = variation::Stats::default();
+    for airport in airports.iter_mut() {
+        let lat = airport.lat_e6 as f64 / 1e6;
+        let lon = airport.lon_e6 as f64 / 1e6;
+        match variation::declination(lat, lon, airport.elevation_ft, effective_days) {
+            Ok(degrees) => {
+                airport.mag_var_deg = degrees;
+                stats.observe(degrees);
+            }
+            Err(_) => stats.failed += 1,
+        }
+    }
+    stats
 }
 
 /// The FAA layer's own last-edit date, in days since the epoch.

@@ -215,6 +215,93 @@ one lookup. What it needed was the chart to carry the **ICAO** identifier: METAR
 and the symbol says `MMU`, and deriving one from the other by prepending `K` is right most of the
 time and silently wrong sometimes — which here means showing another airport's weather.
 
+### Wind against runway
+
+![The airport card with per-runway head and crosswind components](docs/images/map-inspect-wind.png)
+
+With a usable wind on board, the card gains a `RWY` line: **each runway, the end the wind favours,
+and what it does to you there** — best first. Tulsa reporting `18009KT`, so `18 H9` is nine knots
+straight down the runway with no crosswind worth printing, and the crossing runway offers `26 H1
+X9←` — one knot of headwind and nine of crosswind from the left. Note it picked **26** and not 08:
+the other end of that runway is a tailwind, and a tailwind is never shown as a negative headwind.
+
+**It ranks; it does not choose.** No "USE 18", no single highlighted answer, and the runway you
+would not want stays on the line so you can see *why* you would not want it. This is the same
+stance as the airspace card, which prints floors and refuses to say whether you are inside one:
+the display's job here is to do the arithmetic, not to make the decision.
+
+The line is withheld entirely — rather than hedged — in four cases, because each is one where the
+honest answer is "not from this data":
+
+| | |
+| --- | --- |
+| `VRB` | no direction to work from. Defaulting it would read as **north**, out of a report that explicitly declined to give a direction |
+| `CALM` | no sense of direction to rank by |
+| Report older than 30 minutes | see below |
+| No runways in the chart | 12,531 of 18,108 fields have orientations; the rest are mostly heliports and private strips |
+
+The **30 minutes** is a judgement rather than a measurement, and it is deliberately shorter than
+the hour a pilot would treat a METAR as current for. Past half a cycle, either nothing has changed
+— fine — or a SPECI has been issued because something did and it has not reached you, and nothing
+on the display can tell you which. The report itself stays on the card with its age either way;
+only the ranking goes, because the ranking is the part that reads as advice.
+
+#### The bug this feature was one line away from
+
+Runway numbers are **magnetic**. METAR winds are **true**. Both facts were already written down in
+this repo — `chartdata/src/format.rs` said `magnetic heading` and `metar.rs` said `True degrees` —
+and nothing had ever subtracted one from the other, so nothing had ever been wrong.
+
+Subtracting them directly is wrong by the local magnetic variation: about 12° at Morristown, and
+up to 16° either way inside the CONUS box. That is more than one runway number, and on a 20 kt
+wind straight down the runway it invents about four knots of crosswind that is not there. Wrong,
+plausible, and consistent — the worst combination, and not something a pilot could catch by
+looking at the card.
+
+So the chart carries variation now, one signed byte per airport, east-positive. It is **modelled,
+not read**: the FAA layers this project builds from do not have it — `US_Airport` has 26 fields
+and none is magnetic, and `Runways` carries no bearing at all — so `chartdata` computes it from
+the World Magnetic Model at build time, at the file's own effective date. Across CONUS the built
+file spans −16° to +15°. The model, its coefficient table and its expiry stay in the build tool;
+the aircraft binary just adds a constant.
+
+That took the file to **v4**, and an older file is refused rather than read with the field
+defaulted. This is exactly the case where tolerance would be dangerous: variation 0 is a perfectly
+plausible number — it is real along the agonic line — so nothing downstream could distinguish "no
+correction needed here" from "this file predates the correction."
+
+One thing the card does not do is restate the wind in magnetic. The weather line shows `180° 09`
+because that is what the METAR says, and an observation is never rewritten on its way to the
+screen; the correction happens where the wind meets the runway. So the two numbers on the card are
+in different frames by design, and comparing them by eye will be a degree or two off from what the
+`RWY` line reports.
+
+**Precision is modest and should not be dressed up.** A designator names a 10° bucket — `05` is
+anywhere from 045 to 054 — and METAR directions arrive rounded to 10° as well, so the angle can be
+10° out before anything has gone wrong. At 20 kt that is about 3 kt of crosswind. Good enough to
+rank runways and pick an end; not good enough to plan a limit against.
+
+![The airspace card, listing the Class D and Class B stacked over the tapped point](docs/images/map-airspace-card.png)
+
+Tapping **inside an airspace boundary** shows what is stacked over that point instead — `D TEB
+SFC - 2500 ft`, `B JFK 1800 - 7000 ft`, lowest floor first, which is the order you meet them
+climbing. It prints the numbers and never says whether you are inside one: own-ship altitude comes
+from GPS, which scattered 356 ft while sitting still during the outdoor capture, or from a pressure
+sensor on the 29.92 datum. Airspace floors are MSL and compliance is your altimeter on local QNH,
+which this box does not have. The card gives you the number to check against it.
+
+**Tapping is the only thing the plan-view body responds to**, and it was inert on purpose: a hand
+steadying itself against the panel in turbulence must not change the range or the heading reference.
+A card changes no selection, hides no traffic, needs a tap within 18 px of a symbol to open, is
+dismissed by any next tap, and lapses by itself after 20 seconds. The reasoning is in
+[the design note](docs/airspace-and-airports.md#tapping-an-airport-and-the-rule-it-bends).
+
+The data is built by [`tools/chartdata`](tools/chartdata) from the FAA's own `US_Airport`,
+`Runways` and `Class_Airspace` layers, with communication frequencies from OurAirports — all
+public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
+for the measurements behind every threshold, including why a Class D arrives as 3,256 vertices and
+leaves as 84, and why the frequency file stores kilohertz.
+
 ### Controls
 
 The key strips are the primary interface. Labels are redrawn every frame and toggles are
@@ -331,6 +418,11 @@ thunderstorms on the field:
     --out /tmp/shots/wx  --frames 2000 --dump-every 1999
 ./target/release/avionics --host 127.0.0.1 --port 8092 --offscreen --weather-page --decode \
     --out /tmp/shots/wxd --frames 2000 --dump-every 1999
+
+# the runway wind line, which needs a field that is actually reporting a wind — Tulsa here:
+./target/release/mock-stratux --internet --lat 36.1984 --lon -95.8881 --radius 40 --port 8099 &
+./target/release/avionics --host 127.0.0.1 --port 8099 --offscreen --range 5 --map all \
+    --inspect TUL --out /tmp/shots/rwy --frames 2000 --dump-every 1999
 ```
 
 Three things about those weather runs, all learned the hard way:
@@ -430,7 +522,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **on the panel** — 18,108 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; all from the FAA's own layers on one AIRAC cycle, measured on the real VC4 under GLES 2.0 |
 
-395 tests passing, clippy clean.
+419 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a

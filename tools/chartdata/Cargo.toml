@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+world_magnetic_model = "0.4.0"
 # No HTTP client on purpose. fetch-chartdata.sh does the downloading with curl, for the reason
 # fetch-snapshot.sh gives: a TLS stack is not something the workspace should grow without cause.
 # This crate is never cross-compiled — deploy.sh builds `-p avionics` — so none of it ships.

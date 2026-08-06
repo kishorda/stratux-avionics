@@ -63,6 +63,9 @@ const CARD_H: f32 = 88.0;
 /// With a weather line. The card grows rather than reserving a row that is empty at four fields
 /// in five.
 const CARD_H_WX: f32 = 107.0;
+/// With a weather line *and* runway wind components. Needs a usable wind, a fresh report and
+/// runways in the chart, so it is the rarest of the three heights and the last to be reserved.
+const CARD_H_RWY: f32 = 125.0;
 
 /// Where the weather line's text starts, past the category badge. A fixed column rather than a
 /// measured one: `LIFR` is the widest label, and a measured indent would shuffle the line sideways
@@ -77,7 +80,26 @@ const CLASS_COLUMN_PX: f32 = 18.0;
 
 /// Baseline of each card row, from the top of the card. Named rather than written twice, so the
 /// layout test cannot drift away from what the drawing actually does.
-const CARD_ROWS: [f32; 5] = [16.0, 35.0, 53.0, 71.0, 90.0];
+///
+/// Six rows exist; no card uses all of them. The airport card reaches the sixth only when it has
+/// runway wind components to show, and the airspace card is capped separately at
+/// [`AIRSPACE_CARD_MAX_ROWS`].
+const CARD_ROWS: [f32; 6] = [16.0, 35.0, 53.0, 71.0, 90.0, 108.0];
+
+/// Every row must have somewhere to sit inside the card that can draw it, and each taller card
+/// must actually be taller. Checked at compile time rather than in a test: the failure is a row
+/// drawn under the card's own frame, and there is no reason to let a build that does that exist.
+const _: () = assert!(CARD_ROWS[4] + 10.0 <= CARD_H_WX);
+const _: () = assert!(CARD_ROWS[5] + 10.0 <= CARD_H_RWY);
+const _: () = assert!(CARD_H_WX > CARD_H && CARD_H_RWY > CARD_H_WX);
+
+/// How many airspace volumes the stack card lists, at most.
+///
+/// Stated rather than derived from `CARD_ROWS.len()`, which is what it used to be: that made the
+/// airspace card silently taller the moment the airport card grew a row, which is not a decision
+/// the airport card is entitled to make. Four is what fits under the title without the card
+/// reaching the range rings, and a fifth stacked volume over one point is vanishingly rare.
+const AIRSPACE_CARD_MAX_ROWS: usize = 4;
 
 /// What the layer put on screen. Folded into [`crate::FrameStats`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -451,7 +473,7 @@ fn draw_airspace_card(
     }
     let theme = &ui.theme;
 
-    let shown = volumes.len().min(CARD_ROWS.len() - 1);
+    let shown = volumes.len().min(AIRSPACE_CARD_MAX_ROWS);
     let width = CARD_W;
     let height = CARD_ROWS[shown] + 10.0;
     let x0 = layout.content_left();
@@ -547,10 +569,22 @@ fn draw_airport_card(
     // a row that is empty at four fields in five.
     let weather = station_weather(state, airport.station(), now);
 
+    // The runway line needs more than weather: a wind with a direction, a report recent enough to
+    // rank runways from, and runways in the chart to rank. Worked out before the frame is sized
+    // because the card's height depends on the answer.
+    let runways = chart.runways(airport);
+    let winds = weather
+        .as_ref()
+        .and_then(|w| runway_winds(&runways, airport.mag_var_deg, w));
+
     // Lower-left of the content area. Own-ship is at the centre and the nearest threat is most
     // often ahead of it, so the bottom-left corner is the least costly place to spend.
     let width = CARD_W;
-    let height = if weather.is_some() { CARD_H_WX } else { CARD_H };
+    let height = match (&weather, &winds) {
+        (Some(_), Some(_)) => CARD_H_RWY,
+        (Some(_), None) => CARD_H_WX,
+        _ => CARD_H,
+    };
     let x0 = layout.content_left();
     let y0 = layout.footer_y0() - layout.margin - height;
 
@@ -597,8 +631,8 @@ fn draw_airport_card(
         false,
     );
 
-    // Elevation and the longest runway, with its designator when there is one.
-    let runways = chart.runways(airport);
+    // Elevation and the longest runway, with its designator when there is one. `runways` was read
+    // above, where the card's height was decided.
     let mut facts = format!("{} ft", airport.elevation_ft);
     if airport.runway_ft > 0 {
         facts.push_str(&format!("   {} ft", airport.runway_ft));
@@ -682,6 +716,42 @@ fn draw_airport_card(
             &paint,
         );
     }
+
+    // The runway line: which end each runway's wind favours, best first.
+    //
+    // Deliberately *not* a recommendation. It ranks and it prints components; it does not say
+    // "use 05", highlight one answer, or hide the others — the same stance the airspace card
+    // takes when it prints floors and refuses to say whether you are inside one. The wind this
+    // came from is on the line directly above, with its age, so the input to the ranking is
+    // always visible next to the ranking itself.
+    if let Some(winds) = winds {
+        let row = CARD_ROWS[5];
+        // `RWY` in the same column the category badge occupies on the line above, so the two rows
+        // line up and the numbers below the wind read as being about the runways. Dim, because it
+        // is a label rather than a value — the only word on a line that is otherwise all figures.
+        line(
+            canvas,
+            row,
+            theme.font_size_tag,
+            theme.text_dim,
+            "RWY",
+            false,
+        );
+
+        let entries: Vec<String> = winds.iter().map(runway_wind_text).collect();
+        // Measured, like the frequency line above it, and dropped from the end for the same
+        // reason: the list is already sorted best-first, so what falls off is the runway you
+        // would least want.
+        let available = width - pad * 2.0 - CATEGORY_COLUMN_PX;
+        let text = fit_entries(canvas, &entries, &line_paint(ui), available);
+
+        let mut paint = Paint::color(theme.text_secondary);
+        paint.set_font(&[ui.font()]);
+        paint.set_font_size(theme.font_size_tag);
+        paint.set_text_baseline(Baseline::Middle);
+        paint.set_text_align(Align::Left);
+        let _ = canvas.fill_text(x0 + pad + CATEGORY_COLUMN_PX, y0 + row, &text, &paint);
+    }
 }
 
 /// The paint the card's body lines are drawn in. Shared so a measurement and the drawing that
@@ -751,6 +821,74 @@ fn weather_line(weather: &StationWeather) -> String {
     out
 }
 
+/// How old a report may be before its wind stops being used to rank runways.
+///
+/// A METAR is issued hourly, so half a cycle is where the ambiguity starts to bite: past 30
+/// minutes, either nothing has changed — fine — or a SPECI has been issued because something did
+/// and it has not reached you, and **nothing on the display can tell you which**. The report
+/// itself stays on the card either way, with its age; it is only the runway ranking that goes,
+/// because that is the part that reads as advice rather than as an observation.
+///
+/// This is a judgement, not a measurement. It is deliberately shorter than the hour a pilot would
+/// treat a METAR as current for, because FIS-B delivery is opportunistic on top of that.
+const RUNWAY_WIND_MAX_AGE: Duration = Duration::from_secs(30 * 60);
+
+/// Per-runway wind components, best end first — or `None` when the question cannot be answered.
+///
+/// Returns `None`, rather than something hedged, in every case where the honest answer is "not
+/// from this data":
+///
+/// * **No usable wind.** `VRB` has no direction and calm has no sense of one. Neither is a defect,
+///   and both would otherwise produce a confident bearing out of nothing: `VRB03KT` carries
+///   `direction_deg: None`, which as a default would read as north.
+/// * **A stale report.** See [`RUNWAY_WIND_MAX_AGE`].
+/// * **No runways in the chart.** 12,531 of 18,108 fields have orientations; the rest are mostly
+///   heliports and private strips.
+///
+/// The ranking is by headwind, then by least crosswind. Those agree for a given wind speed — most
+/// headwind is least angle off is least crosswind — so the second key only settles ties between
+/// runways the display cannot tell apart anyway, and settles them the same way every frame.
+fn runway_winds(
+    runways: &[chart::Runway],
+    mag_var_deg: i8,
+    weather: &StationWeather,
+) -> Option<Vec<chart::RunwayWind>> {
+    if weather.age > RUNWAY_WIND_MAX_AGE || runways.is_empty() {
+        return None;
+    }
+    let wind = weather.summary.wind?;
+    let direction = wind.direction_deg?;
+    if wind.is_calm() {
+        return None;
+    }
+
+    let mut winds: Vec<chart::RunwayWind> = runways
+        .iter()
+        .map(|r| r.wind_at(direction, wind.speed_kt, mag_var_deg))
+        .collect();
+    winds.sort_by(|a, b| {
+        b.head_kt
+            .cmp(&a.head_kt)
+            .then_with(|| a.cross_kt.cmp(&b.cross_kt))
+            .then_with(|| a.number.cmp(&b.number))
+    });
+    Some(winds)
+}
+
+/// One runway's entry on the card: `"05 H12 X4\u{2192}"`.
+///
+/// `H` and `X` rather than spelled-out words because the row has to hold two or three of these in
+/// 290 px, and the row above already establishes that this card talks about runways. The arrow is
+/// the side the crosswind comes from, looking down the runway named — the one part a pilot cannot
+/// infer from the numbers.
+fn runway_wind_text(wind: &chart::RunwayWind) -> String {
+    let mut out = format!("{:02} H{}", wind.number, wind.head_kt);
+    if wind.cross_kt > 0 {
+        out.push_str(&format!(" X{}{}", wind.cross_kt, wind.cross_from.arrow()));
+    }
+    out
+}
+
 /// Visibility without a trailing `.0`, since whole miles are the common case.
 fn format_visibility(sm: f32) -> String {
     if (sm - sm.round()).abs() < 0.05 {
@@ -785,6 +923,120 @@ mod tests {
 
     fn layout() -> Layout {
         Layout::for_size(800.0, 480.0, &Theme::dark())
+    }
+
+    /// A station report carrying one wind, at an age the runway line will accept.
+    fn weather_with(wind: Option<metar::Wind>, age_min: u64) -> StationWeather {
+        StationWeather {
+            summary: metar::Summary {
+                category: None,
+                ceiling_ft: None,
+                visibility_sm: None,
+                wind,
+            },
+            age: Duration::from_secs(age_min * 60),
+            has_taf: false,
+        }
+    }
+
+    fn wind(direction: Option<u16>, speed: u16) -> Option<metar::Wind> {
+        Some(metar::Wind {
+            direction_deg: direction,
+            speed_kt: speed,
+            gust_kt: None,
+        })
+    }
+
+    /// Morristown's two orientations: 05/23 and 13/31.
+    fn mmu_runways() -> Vec<chart::Runway> {
+        vec![
+            chart::Runway {
+                heading_deg: 50,
+                length_ft: 5999,
+            },
+            chart::Runway {
+                heading_deg: 130,
+                length_ft: 3999,
+            },
+        ]
+    }
+
+    #[test]
+    fn runways_are_ranked_with_the_most_headwind_first() {
+        // A wind from 060 true at 12W is 072 magnetic: closest to runway 05, and 13 is next.
+        let w = weather_with(wind(Some(60), 15), 2);
+        let ranked = runway_winds(&mmu_runways(), -12, &w).expect("a usable wind");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].number, 5, "05 is most into wind");
+        assert!(
+            ranked[0].head_kt >= ranked[1].head_kt,
+            "ranking is by headwind: {ranked:?}"
+        );
+    }
+
+    /// `VRB` has no direction. Defaulting it would read as north and rank runways off a number
+    /// the report explicitly declined to give.
+    #[test]
+    fn a_variable_wind_ranks_nothing() {
+        let w = weather_with(wind(None, 5), 2);
+        assert!(runway_winds(&mmu_runways(), -12, &w).is_none());
+    }
+
+    #[test]
+    fn a_calm_wind_ranks_nothing() {
+        let w = weather_with(wind(Some(0), 0), 2);
+        assert!(runway_winds(&mmu_runways(), -12, &w).is_none());
+    }
+
+    #[test]
+    fn a_report_with_no_wind_group_at_all_ranks_nothing() {
+        let w = weather_with(None, 2);
+        assert!(runway_winds(&mmu_runways(), -12, &w).is_none());
+    }
+
+    /// The report stays on the card when it goes stale; only the ranking goes.
+    #[test]
+    fn a_stale_report_ranks_nothing() {
+        let fresh = weather_with(wind(Some(60), 15), 29);
+        let stale = weather_with(wind(Some(60), 15), 31);
+        assert!(runway_winds(&mmu_runways(), -12, &fresh).is_some());
+        assert!(runway_winds(&mmu_runways(), -12, &stale).is_none());
+    }
+
+    #[test]
+    fn a_field_with_no_runways_in_the_chart_ranks_nothing() {
+        let w = weather_with(wind(Some(60), 15), 2);
+        assert!(runway_winds(&[], -12, &w).is_none());
+    }
+
+    /// The crosswind term is dropped when it rounds to nothing, rather than printing `X0`. A zero
+    /// with an arrow on it invites reading a direction into a component that has none.
+    #[test]
+    fn a_runway_straight_into_wind_prints_no_crosswind_term() {
+        let straight = chart::RunwayWind {
+            number: 5,
+            head_kt: 14,
+            cross_kt: 0,
+            cross_from: chart::Side::Right,
+        };
+        assert_eq!(runway_wind_text(&straight), "05 H14");
+
+        let angled = chart::RunwayWind {
+            number: 23,
+            head_kt: 9,
+            cross_kt: 6,
+            cross_from: chart::Side::Left,
+        };
+        assert_eq!(runway_wind_text(&angled), "23 H9 X6\u{2190}");
+    }
+
+    /// Capping the airspace card explicitly is what stops the airport card's sixth row making the
+    /// airspace card taller as a side effect. The card heights themselves are checked at compile
+    /// time beside the constants.
+    #[test]
+    fn the_airspace_card_cap_is_independent_of_how_many_rows_exist() {
+        assert_eq!(AIRSPACE_CARD_MAX_ROWS, 4);
+        assert!(CARD_ROWS.len() > AIRSPACE_CARD_MAX_ROWS + 1);
     }
 
     fn projection(range_nm: f32) -> Projection {
@@ -1382,9 +1634,24 @@ mod tests {
             "the weather card overlaps the footer"
         );
         assert!(x0 + CARD_W <= l.content_x1);
+        // The tallest card must also clear the footer, since it is the one that gets closest.
+        let y0_rwy = l.footer_y0() - l.margin - CARD_H_RWY;
+        assert!(
+            y0_rwy > l.strip_y0(),
+            "the runway card starts above the bar"
+        );
+        assert!(
+            y0_rwy + CARD_H_RWY < l.footer_y0(),
+            "the runway card overlaps the footer"
+        );
+
         // Every row has somewhere to sit inside the card it belongs to.
         for (index, row) in CARD_ROWS.iter().enumerate() {
-            let card = if index == 4 { CARD_H_WX } else { CARD_H };
+            let card = match index {
+                5 => CARD_H_RWY,
+                4 => CARD_H_WX,
+                _ => CARD_H,
+            };
             assert!(
                 *row < card,
                 "row {index} at {row} is outside a card of {card}"

@@ -167,24 +167,20 @@ Class B — is 502.
 ### What the build actually produced
 
 ```
-airports.csv        85824 rows -> 20736 kept
-    dropped: 54448 outside CONUS, 7328 closed or balloonport,
-             3312 no usable identifier, 0 no position
-    11199 frequencies at 3780 airports (18%),
-    15573 runway orientations at 13104 (63%)
+FAA US_Airport (20 pages)  19559 features -> 18108 kept
+    dropped: 932 outside CONUS, 337 not operational, 0 no position, 182 no identifier
+    2335 with an ICAO station (13%), 10847 frequencies at 3750 airports,
+    14926 runway orientations at 12531
 airspace (7 pages)  1486 features -> 1408 kept
     dropped: 0 not class B/C/D, 78 outside the keep box, 0 no usable geometry
     vertices: 287618 -> 128479 (44.7%) at 10 m tolerance
+variation    18108 airports, -16 to 15 degrees (east-positive)
 
-conus.chart (2676 KiB), format v3
-    20736 airports, 1408 airspace polygons, 1410 rings, 128479 vertices
-    15573 runway orientations, 11199 frequencies, 474 KiB of names
-    grid 26x58 cells from 24, -125
-    FAA data effective 2026-07-09
-    tiers: 821 major, 3151 paved, 10054 minor, 6710 heliport
-    class B:  402 polygons,  33205 vertices, largest 502
-    class C:  397 polygons,  41068 vertices, largest 257
-    class D:  609 polygons,  54206 vertices, largest 467
+conus.chart (2351 KiB), format v4
+    18108 airports, 1408 airspace polygons, 1410 rings, 128479 vertices
+    14926 runway orientations, 10847 frequencies, 276 KiB of names
+    grid 28x61 cells from 22, -125
+    FAA data effective 2026-07-09 (day 20643)
 ```
 
 The 44.7% is not comparable with the table above: the input to the build is already generalised at
@@ -193,7 +189,47 @@ comparable is the largest polygon — 502 vertices, the same New York Class B, r
 routes.
 
 The build is byte-reproducible: the same source directory gives an identical file, so a rebuild
-that shows in the diff is a *data* change and nothing else.
+that shows in the diff is a *data* change and nothing else. That still holds with variation in the
+file, because it is computed at the chart's own effective date rather than at the wall clock of
+whoever ran the build — the same source directory gives the same declinations however long after
+the cycle it is rebuilt.
+
+### Magnetic variation, and why the file has to carry it
+
+One signed byte per airport, east-positive, whole degrees. It exists because two numbers the
+display has to compare are in different reference frames:
+
+- **Runway headings are magnetic**, coming from the painted designator — which is the only source
+  populated for every runway, the survey heading having been available for under a third of them.
+- **METAR surface winds are true.** The wind a pilot hears on ATIS or from the tower is magnetic;
+  the one in the body of the report is not, which is exactly why this catches people out.
+
+Subtracting them directly is wrong by the local variation — about 12° at Morristown, up to 16°
+either way inside the CONUS box, which is more than one runway number. The failure is invisible:
+plausible numbers, consistently offset, on a card that gives the pilot no way to notice.
+
+**It is modelled, not read.** The FAA layers this build uses do not carry it. Checked rather than
+assumed: `US_Airport` exposes 26 fields and none of them is magnetic, and `Runways` exposes 18
+with no bearing at all. So `tools/chartdata` computes declination from the World Magnetic Model
+(the `world_magnetic_model` crate, WMM2025, valid to 2030) at each airport's position and the
+file's effective date.
+
+Three consequences worth stating:
+
+- **The model stays in the build tool.** A spherical-harmonic expansion with a coefficient table
+  and an expiry date has no business in the aircraft binary to answer a question whose only input
+  — an airport's position — is fixed at build time. The display adds a constant.
+- **The record did not grow.** Airport records already ended with two spare bytes; variation took
+  one and left one. `AIRPORT_LEN` is still 48 and no offset moved.
+- **The version still went up, to v4, and older files are refused.** This is the case where
+  tolerating an old file would be dangerous rather than convenient. Variation 0 is a *plausible*
+  value — it is real along the agonic line — so a v3 file read with the field defaulted would be
+  indistinguishable from a place needing no correction, and every runway on the display would be
+  quietly off.
+
+The model's own uncertainty is a fraction of a degree, which is irrelevant here: the runway
+heading it corrects is a 10° bucket, so the stored value is rounded to whole degrees and the
+rounding disappears several places below the noise floor of what it is corrected against.
 
 ### Downloading it without simplifying it twice
 

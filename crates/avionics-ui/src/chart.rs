@@ -33,7 +33,11 @@ use anyhow::{bail, ensure, Result};
 use stratux_client::domain::LatLon;
 
 const MAGIC: [u8; 8] = *b"AVCHART1";
-const VERSION: u16 = 3;
+/// Version 4 added magnetic variation. See `chartdata::format::VERSION` for why an older file is
+/// refused outright rather than read with the field defaulted: variation 0 is a plausible number,
+/// so nothing downstream could tell a pre-v4 file from a place where the correction is genuinely
+/// nil, and every runway on the display would be quietly off by the local variation.
+const VERSION: u16 = 4;
 
 const HEADER_LEN: usize = 96;
 const BUCKET_LEN: usize = 8;
@@ -163,10 +167,106 @@ pub struct Runway {
 impl Runway {
     /// `"05/23"` — the pair of numbers painted on the ends.
     pub fn designator(&self) -> String {
-        let a = ((self.heading_deg / 10) % 36).max(1);
-        let b = if a > 18 { a - 18 } else { a + 18 };
+        let (a, b) = self.numbers();
         format!("{a:02}/{b:02}")
     }
+
+    /// The two runway numbers, base end first.
+    fn numbers(&self) -> (u16, u16) {
+        let a = ((self.heading_deg / 10) % 36).max(1);
+        let b = if a > 18 { a - 18 } else { a + 18 };
+        (a, b)
+    }
+
+    /// Which end the wind favours, and what it does to you there.
+    ///
+    /// `wind_from_deg` is **true** degrees, because that is how a METAR reports it.
+    /// `mag_var_deg` is **east-positive**, as [`Airport::mag_var_deg`] stores it. The two
+    /// arguments are in different reference frames on purpose — this function is the one place
+    /// that reconciles them, so nothing else in the display has to remember which is which.
+    ///
+    /// # The correction
+    ///
+    /// Runway numbers are magnetic and METAR winds are true, so the wind is converted *to*
+    /// magnetic before it meets the runway: `magnetic = true - variation`. At Morristown, where
+    /// variation is 12W (`-12`), a reported `10012KT` is 112 degrees magnetic, not 100. Skipping
+    /// this is wrong by more than a runway number across most of the country, and on a 20 kt wind
+    /// down the runway it invents about 4 kt of crosswind that is not there.
+    ///
+    /// # Precision
+    ///
+    /// Deliberately modest, and the caller should not dress it up. A designator names a 10-degree
+    /// bucket — `05` is anywhere from 045 to 054 — and METAR directions arrive rounded to 10
+    /// degrees as well, so the angle here can be 10 degrees out before anything goes wrong. At 20
+    /// kt that is about 3 kt of crosswind. Good enough to rank runways and pick an end; not good
+    /// enough to plan a limit against.
+    pub fn wind_at(&self, wind_from_deg: u16, speed_kt: u16, mag_var_deg: i8) -> RunwayWind {
+        let wind_magnetic = (wind_from_deg as f32) - (mag_var_deg as f32);
+        let (a, b) = self.numbers();
+
+        // Angle from the runway to the wind, normalised to -180..=180. Positive means the wind is
+        // clockwise of the runway heading, which is to say it comes from the right.
+        let mut off = wind_magnetic - self.heading_deg as f32;
+        off = (off + 180.0).rem_euclid(360.0) - 180.0;
+
+        let head = speed_kt as f32 * off.to_radians().cos();
+        let cross = speed_kt as f32 * off.to_radians().sin();
+
+        // A negative headwind means you are looking at the wrong end of the runway. Turning round
+        // reverses both components, so there is no need to recompute the geometry.
+        //
+        // The epsilon is not defensive noise-handling, it is a tie-break. A wind exactly across
+        // the runway favours neither end, and `cos` of a right angle is a hair either side of zero
+        // depending on the arithmetic — so a bare `< 0.0` would pick 09 or 27 unpredictably, and a
+        // wind wandering by one degree either side of 090 would make the card flicker between
+        // them. Ties go to the lower-numbered end, always.
+        const TIE: f32 = 1e-3;
+        let (number, head, cross) = if head < -TIE {
+            (b, -head, -cross)
+        } else {
+            (a, head, cross)
+        };
+
+        RunwayWind {
+            number: number as u8,
+            head_kt: head.round().max(0.0) as u16,
+            cross_kt: cross.abs().round() as u16,
+            cross_from: if cross >= 0.0 {
+                Side::Right
+            } else {
+                Side::Left
+            },
+        }
+    }
+}
+
+/// Which side a crosswind comes from, looking down the runway you would use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    /// A single character, because the card has one line and an arrow reads faster than a word.
+    pub fn arrow(&self) -> &'static str {
+        match self {
+            Side::Left => "\u{2190}",
+            Side::Right => "\u{2192}",
+        }
+    }
+}
+
+/// What the wind does at the favoured end of one runway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunwayWind {
+    /// The number painted on the end the wind favours, 1..=36.
+    pub number: u8,
+    /// Headwind in knots at that end. Never negative — the end was chosen so it is not.
+    pub head_kt: u16,
+    /// Crosswind in knots, magnitude only. [`Self::cross_from`] carries the side.
+    pub cross_kt: u16,
+    pub cross_from: Side,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +288,11 @@ pub struct Airport {
     freq_count: u8,
     name_off: u32,
     name_len: u8,
+    /// Magnetic variation in whole degrees, **east-positive** — `13W` is `-13`.
+    ///
+    /// Present so a magnetic runway heading can be compared with a true METAR wind. See
+    /// [`Runway::wind_components`].
+    pub mag_var_deg: i8,
 }
 
 impl Airport {
@@ -550,6 +655,7 @@ impl Chart {
             name_off: self.u32at(o + 40),
             name_len: self.bytes[o + 44],
             freq_count: self.bytes[o + 45],
+            mag_var_deg: self.bytes[o + 46] as i8,
         })
     }
 
@@ -850,6 +956,39 @@ mod tests {
         assert_eq!(chart.airspace_count(), 1_408);
         // 2026-07-09, as the FAA layer reported it when the file was built.
         assert_eq!(chart.effective_days(), 20_643);
+    }
+
+    /// Variation has to be *in* the shipped file, not merely supported by the reader.
+    ///
+    /// The failure this catches is a rebuild that silently skipped the model pass: every airport
+    /// would read 0, the display would apply no correction, and nothing else would look wrong.
+    /// So this asserts on the spread across the country, which no defaulted field can produce.
+    #[test]
+    fn the_shipped_file_carries_variation_that_actually_varies() {
+        let Some(chart) = conus() else { return };
+
+        let at = |lat, lon, label: &str| {
+            let bounds = bounds_around(LatLon::new(lat, lon), 15.0);
+            chart
+                .airports_in(&bounds, Tier::Minor)
+                .into_iter()
+                .find(|a| a.label() == label)
+                .unwrap_or_else(|| panic!("{label} is in the chart"))
+                .mag_var_deg
+        };
+
+        // East of the agonic line variation is west, i.e. negative; out west it is positive. A
+        // file with the pass skipped reads 0 for all three.
+        let morristown = at(40.7784, -74.3343, "MMU");
+        let broomfield = at(39.909, -105.117, "BJC");
+        assert!(
+            (-16..=-8).contains(&morristown),
+            "Morristown variation {morristown}"
+        );
+        assert!(
+            (4..=12).contains(&broomfield),
+            "Broomfield variation {broomfield}"
+        );
     }
 
     #[test]
@@ -1479,5 +1618,143 @@ mod tests {
             Chart::from_bytes(count).is_err(),
             "airport count vs offsets"
         );
+    }
+
+    /// A wind straight down the runway is all headwind and no crosswind, and picks the end you
+    /// would actually use rather than its reciprocal.
+    #[test]
+    fn a_wind_down_the_runway_is_all_headwind() {
+        let rwy = Runway {
+            heading_deg: 50,
+            length_ft: 6000,
+        };
+        // 050 magnetic with no variation to apply.
+        let w = rwy.wind_at(50, 15, 0);
+        assert_eq!(w.number, 5);
+        assert_eq!(w.head_kt, 15);
+        assert_eq!(w.cross_kt, 0);
+    }
+
+    /// The reciprocal end must be chosen when the wind is behind you, and the components reported
+    /// for *that* end — a tailwind is never shown as a negative headwind.
+    #[test]
+    fn a_wind_from_behind_selects_the_other_end() {
+        let rwy = Runway {
+            heading_deg: 50,
+            length_ft: 6000,
+        };
+        let w = rwy.wind_at(230, 15, 0);
+        assert_eq!(w.number, 23, "should favour 23, not 05");
+        assert_eq!(w.head_kt, 15);
+        assert_eq!(w.cross_kt, 0);
+    }
+
+    /// Standing on runway 09 with the wind from the south, the crosswind is from the right. This
+    /// is the assertion that catches a sign flip in the sine, which is otherwise invisible: the
+    /// magnitude is identical either way.
+    #[test]
+    fn a_crosswind_reports_the_side_it_comes_from() {
+        let rwy = Runway {
+            heading_deg: 90,
+            length_ft: 6000,
+        };
+
+        let from_south = rwy.wind_at(180, 10, 0);
+        assert_eq!(from_south.number, 9);
+        assert_eq!(from_south.cross_kt, 10);
+        assert_eq!(from_south.cross_from, Side::Right);
+        assert_eq!(from_south.head_kt, 0);
+
+        let from_north = rwy.wind_at(360, 10, 0);
+        assert_eq!(from_north.cross_from, Side::Left);
+    }
+
+    /// A wind exactly across the runway favours neither end, so the answer must at least be the
+    /// *same* every time. Without a tie-break this flips on floating-point noise, and the card
+    /// would swap 09 for 27 as the wind wandered a degree either side of straight across.
+    #[test]
+    fn a_wind_exactly_across_the_runway_picks_an_end_and_stays_there() {
+        let rwy = Runway {
+            heading_deg: 90,
+            length_ft: 6000,
+        };
+        for _ in 0..8 {
+            let w = rwy.wind_at(180, 12, 0);
+            assert_eq!(w.number, 9, "ties go to the lower-numbered end");
+            assert_eq!(w.head_kt, 0);
+            assert_eq!(w.cross_kt, 12);
+        }
+    }
+
+    /// **The reason this whole field exists.** A METAR wind is true and a runway number is
+    /// magnetic; at 12W the two differ by more than one runway number. The uncorrected answer is
+    /// not wildly wrong, which is exactly what makes it dangerous — it is plausible.
+    #[test]
+    fn variation_is_applied_before_the_wind_meets_the_runway() {
+        // Morristown: runway 05, variation 12W.
+        let rwy = Runway {
+            heading_deg: 50,
+            length_ft: 6000,
+        };
+        let wind_true = 50;
+
+        // Uncorrected, this reads as a perfect 20 kt down the runway.
+        let uncorrected = rwy.wind_at(wind_true, 20, 0);
+        assert_eq!(uncorrected.cross_kt, 0);
+
+        // Corrected, 050 true is 062 magnetic: 12 degrees off the runway, which is a real if small
+        // crosswind. Getting this wrong understates the crosswind at every field in the east.
+        let corrected = rwy.wind_at(wind_true, 20, -12);
+        assert_eq!(corrected.number, 5);
+        assert_eq!(corrected.cross_kt, 4);
+        assert_eq!(corrected.cross_from, Side::Right);
+        assert_eq!(corrected.head_kt, 20);
+    }
+
+    /// East variation has to move the wind the other way. Same runway, same wind, opposite sign,
+    /// opposite side — if the subtraction were backwards this is the test that says so.
+    #[test]
+    fn east_variation_moves_the_wind_the_other_way() {
+        let rwy = Runway {
+            heading_deg: 50,
+            length_ft: 6000,
+        };
+        let west = rwy.wind_at(50, 20, -12);
+        let east = rwy.wind_at(50, 20, 12);
+        assert_eq!(west.cross_from, Side::Right);
+        assert_eq!(east.cross_from, Side::Left);
+        assert_eq!(west.cross_kt, east.cross_kt, "same magnitude either way");
+    }
+
+    /// Wrapping through north must not produce a 300-degree angle off.
+    #[test]
+    fn the_angle_wraps_through_north_rather_than_going_the_long_way() {
+        let rwy = Runway {
+            heading_deg: 10,
+            length_ft: 4000,
+        };
+        let w = rwy.wind_at(350, 20, 0);
+        assert_eq!(w.number, 1);
+        assert_eq!(w.cross_kt, 7, "20 kt at 20 degrees off");
+        assert_eq!(w.cross_from, Side::Left);
+    }
+
+    /// Runway 36 must not come out as 0, and 18 must not come out as 36 on the wrong end.
+    #[test]
+    fn the_numbers_at_both_ends_stay_in_range() {
+        for heading in (0..360).step_by(10) {
+            let rwy = Runway {
+                heading_deg: heading,
+                length_ft: 3000,
+            };
+            for wind in [0u16, 90, 180, 270] {
+                let w = rwy.wind_at(wind, 10, 0);
+                assert!(
+                    (1..=36).contains(&w.number),
+                    "heading {heading}, wind {wind} gave runway {}",
+                    w.number
+                );
+            }
+        }
     }
 }

@@ -8,7 +8,8 @@
 //!   header      96 B   magic, version, counts, section offsets, grid, effective date
 //!   buckets      8 B   per 1x1 degree cell: first airport, airport count
 //!   airports    48 B   position, label, ICAO station, elevation, runway, kind, tier,
-//!                      flags, and ranges into the runway, frequency and string tables
+//!                      flags, magnetic variation, and ranges into the runway, frequency
+//!                      and string tables
 //!   airspace    40 B   bounding box, ring range, class, flags, lower/upper, label
 //!   rings        8 B   first vertex, vertex count
 //!   vertices     8 B   latitude and longitude, i32 micro-degrees
@@ -39,7 +40,15 @@ pub const MAGIC: [u8; 8] = *b"AVCHART1";
 /// Version 3 added the ICAO station identifier, which is what joins an airport to the METARs
 /// already arriving over the Stratux weather socket. The reader refuses any other version outright
 /// rather than guessing at a layout.
-pub const VERSION: u16 = 3;
+///
+/// Version 4 added magnetic variation, in a byte the record already had spare — so the record is
+/// still 48 bytes and no offset moved. The version still had to go up, and this is exactly why the
+/// reader refuses rather than tolerates: a v3 file read as v4 would produce variation 0 at every
+/// airport, which is a *plausible* number. Zero variation is real somewhere along the agonic line,
+/// so nothing downstream could tell the difference between "no correction needed here" and "this
+/// file predates the correction" — and the display would quietly point at the wrong runway
+/// everywhere else. See [`crate::variation`].
+pub const VERSION: u16 = 4;
 
 pub const HEADER_LEN: usize = 96;
 pub const BUCKET_LEN: usize = 8;
@@ -232,6 +241,11 @@ pub struct Airport {
     pub kind: Kind,
     pub tier: Tier,
     pub flags: u8,
+    /// Magnetic variation in whole degrees, **east-positive** — `13W` is `-13`.
+    ///
+    /// What makes a magnetic runway heading comparable with a true METAR wind. See
+    /// [`crate::variation`] for why the file carries it at all.
+    pub mag_var_deg: i8,
     pub runways: Vec<Runway>,
     pub frequencies: Vec<Frequency>,
 }
@@ -475,7 +489,10 @@ pub fn write(chart: &Chart) -> Vec<u8> {
         out.extend_from_slice(&name_off.to_le_bytes());
         out.push(*name_len);
         out.push(*freq_count);
-        out.extend_from_slice(&0u16.to_le_bytes());
+        // Magnetic variation, east-positive. This byte and the one after it were the record's
+        // spare pair, which is why v4 did not change `AIRPORT_LEN` or move a single offset.
+        out.push(airport.mag_var_deg as u8);
+        out.push(0); // reserved
     }
 
     for (space, (ring_first, ring_count)) in chart.airspace.iter().zip(&ring_ranges) {
@@ -702,6 +719,7 @@ pub fn read_airports(bytes: &[u8]) -> Result<Vec<Airport>> {
                 _ => Tier::Heliport,
             },
             flags: r[30],
+            mag_var_deg: r[46] as i8,
             runways,
             frequencies,
         });
@@ -784,6 +802,9 @@ mod tests {
             kind: Kind::Medium,
             tier,
             flags: FLAG_HARD_SURFACE | FLAG_LIGHTED,
+            // A west variation, and deliberately not zero: a round-trip test against 0 would pass
+            // just as happily if the field were never written at all.
+            mag_var_deg: -13,
             runways: vec![
                 Runway {
                     heading_deg: 50,
@@ -1056,5 +1077,35 @@ mod tests {
             back.iter().all(|a| a.label.len() <= LABEL_LEN),
             "a label ran into the next field"
         );
+    }
+
+    /// Variation has to survive the round trip **with its sign**, which is the half that is easy
+    /// to lose: it is written through a `u8` cast, and a west variation read back as `243` would
+    /// be the same bit pattern doing something entirely different.
+    #[test]
+    fn a_west_variation_round_trips_as_a_negative_number() {
+        let bytes = write(&chart());
+        let back = read_airports(&bytes).unwrap();
+        assert!(!back.is_empty());
+        for airport in &back {
+            assert_eq!(
+                airport.mag_var_deg, -13,
+                "{} lost its variation or its sign",
+                airport.label
+            );
+        }
+    }
+
+    /// The record must not have grown. v4 spent a byte the layout already had spare, and if that
+    /// ever stops being true every offset after it moves and the reader silently misreads.
+    #[test]
+    fn adding_variation_did_not_change_the_record_size() {
+        assert_eq!(AIRPORT_LEN, 48);
+        let bytes = write(&chart());
+        let summary = read_summary(&bytes).unwrap();
+        let at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as usize;
+        // Header offsets, in the order `write` emits them: airports at 60, airspace at 64.
+        let span = at(64) - at(60);
+        assert_eq!(span, summary.airports as usize * AIRPORT_LEN);
     }
 }
