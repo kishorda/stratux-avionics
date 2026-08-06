@@ -41,7 +41,9 @@ frame rendered by the shipping code; see [regenerating these](#regenerating-the-
 Own-ship centred, range rings, a fully labelled compass rose, and target tags carrying
 callsign and relative altitude in hundreds of feet with a climb/descend arrow. The red symbol
 is a conflict — co-altitude and closing. Underneath is the FIS-B NEXRAD precipitation mosaic,
-drawn as one texture rather than ten thousand paths.
+drawn as one texture rather than ten thousand paths, and beneath that again the airport layer —
+`BJC`, `BDU` and `EIK`, which is what `MAP APT` on the sixth key means. That is the display as it
+comes up: this frame has had nothing selected on it.
 
 The **top bar** answers "is this thing actually working?": GPS fix and satellite count, the
 per-radio message rate for 1090 and 978, traffic counts including targets culled or held back,
@@ -55,13 +57,15 @@ rather than as three columns with text loose at the bottom.
 ### The two culls
 
 `RNG` selects how far out to look; `ALT` selects how far up and down. Above is the default
-`ALT NRM` band, ±2700 ft — `TFC 4 +5 out +2 alt` says four targets drawn, five beyond the ring,
-two outside the band. Below is the same scene with `ALT ALL`, and the two aircraft at +36 and
-+33 are back:
+`ALT NRM` band, ±2700 ft — `TFC 4 +4 out +3 alt +1 nopos` says four targets drawn, four beyond the
+ring, three outside the band, and one heard without a position at all. Below is the same instant
+with `ALT ALL`, and the three aircraft at +36, +33 and −29 are back:
 
 ![The same scene with the vertical filter opened up to unrestricted](docs/images/plan-view-unfiltered.png)
 
-The counts always partition: `drawn + out + alt` is the same number whichever band is selected.
+The counts always partition: `drawn + out + alt` is the same number whichever band is selected —
+4+4+3 above, 7+4 below, eleven either way, with the one non-positional target counted separately
+because it was never a candidate for either cull.
 Both the key and the footer readout turn amber only while the filter is *actually* withholding
 something, which is why they are amber in the first image and not the second. See
 [the vertical filter](#the-vertical-filter) for what it will and will not hide.
@@ -70,44 +74,85 @@ something, which is why they are amber in the first image and not the second. Se
 
 ![Plan view replaying the first outdoor capture, plotting a real airliner](docs/images/plan-view-live.png)
 
-The first real-world capture, replayed: a genuine 3D GPS fix (`GPS 3D/13`) and a real ADS-B
+The first real-world capture, replayed: a genuine 3D GPS fix (`GPS 3D/8`) and a real ADS-B
 target — `RPA3412 +107 ↑`, Republic Airways, 10,700 ft above and climbing. `978 0/m` in red and
 `NO weather` are correct and expected on the ground; FIS-B is line-of-sight from ground stations
-aimed at aircraft.
+aimed at aircraft. The unlabelled rings at the edges are airports: past 10 nm the map layer draws
+the symbol and drops the identifier, because at 40 nm the labels would be competing with traffic
+tags and traffic wins.
 
 Note `ALT ALL`. At 10,700 ft above, this target is outside the default `ALT NRM` band — under the
-default the same frame reads `TFC 0 +1 alt` with an empty ring and an amber `ALT NRM`, which is a
-fair illustration of what the vertical filter does on the ground, where everything you hear is
-far overhead.
+default the same frame reads `TFC 0 +1 alt +1 nopos` with an empty ring and an amber `ALT NRM`,
+which is a fair illustration of what the vertical filter does on the ground, where everything you
+hear is far overhead.
 
 ### Weather text
 
-![FIS-B text page listing live METARs, nearest station first](docs/images/weather-raw.png)
+![FIS-B text page as a table: station, product, flight category, report](docs/images/weather-raw.png)
 
-**Nearest station first**, which is the whole reason this page is readable. It used to sort
-alphabetically: with 33 reports on board over New York, `KMMU` — the field own-ship was sitting on
-— came *tenth*, behind Allentown, Bridgeport and Danbury, purely because of its spelling. The chart
-carries a position for every ICAO station, so the display sorts by distance and shows it.
+**A table, one row per report, four fixed columns**: station, product, flight category, report.
+Real observations over Daytona Beach, pulled from aviationweather.gov moments before this was
+rendered, with afternoon convection on the field — `KDAB` is reporting `-TSRA`, `KEVB` nine miles
+away is `LIFR` in `+TSRA FG`, and `KTIX` is `MVFR`.
 
-The station leads the row in the brightest colour on it. Every row used to begin with the word
-`METAR`, identical and eleven characters wide, so the eye landed on the one thing that was the same
-everywhere. The body no longer repeats the product and station either — the heading already says
-both, and that was eleven more characters of the left edge spent on a repeat.
+Fifteen reports fit on the panel. Nine used to, because each report took two lines — a heading
+above its body — and every field started wherever the previous one happened to end. That is what
+made the page unscannable, and it is why the columns are fixed rather than flowed: a pilot looking
+for one airport reads *down* the first column, and a pilot checking whether anything is IFR reads
+down the third.
 
-Real observations, pulled from aviationweather.gov moments before this was rendered. Newest first,
-each carrying **its own age** — delivery is opportunistic, so one station can be twenty minutes
-stale while its neighbour is current and nothing on the wire warns you. Hazards are highlighted
-inside the raw text and the flight category is badged (`VFR` here, green).
+`METAR` becomes `M` and `TAF` becomes `T`, which works **only** because the column is fixed. A
+bare `M` in flowing text would be ambiguous; at a known x it is not. The body drops its own
+`METAR KDAB` prefix for the same reason — eleven characters of the most valuable space on the row,
+the left edge where the eye lands, spent repeating what the two columns to its left have just
+said. The issue time stays, being the one part of the prefix that is not already on the row.
+
+The column widths are **measured from the headings actually on the page**, not from a constant.
+Three cheaper attempts failed: a per-character estimate, then a fixed 54 px, then measuring a
+synthetic `MMMM` worst case — the last still let `KHPN`, `KBLM` and `KOQN` touch the product
+letter. The reasoning is recorded in `weatherpage.rs` so the next person does not retry a constant.
+
+Sorting is **by product, then nearest first**. It used to be alphabetical: with 33 reports on board
+over New York, `KMMU` — the field own-ship was sitting on — came *tenth*, behind Allentown,
+Bridgeport and Danbury, purely because of its spelling. The chart carries a position for every ICAO
+station, so the display sorts by distance and shows it in the right-hand margin. Product comes
+first because a pilot reaching for weather wants observations before forecasts, which is why the
+four TAFs sit below every METAR here even though `KDAB`'s TAF is for the field underneath.
+
+Each report carries **its own age**, because FIS-B delivery is opportunistic — one station can be
+twenty minutes stale while its neighbour is current, and nothing on the wire warns you. Hazards
+keep their colour inside the raw text. `K12N` shows what an empty category column looks like: not
+every station publishes one, and a blank is the honest answer.
+
+The cost is the report body, which now gets about 43 characters before it is cut with `…` instead
+of the roughly 63 a full-width second line gave it. That is the trade the table makes, and it is
+the right one only because tapping the row opens the whole thing.
 
 ### Weather, decoded
 
-![A live TAF expanded into a glossary of its abbreviations](docs/images/weather-decoded.png)
+![A live METAR expanded into a glossary of its abbreviations](docs/images/weather-decoded.png)
 
-The `DECODE` soft key expands the selected report into every abbreviation it contains, including
-the structured groups — `021740Z` resolves through `Z`, `16012KT` through `KT`, `P6SM` through `P`
-and `SM`. Sourced from the NWS METAR/TAF card and FMH-1 chapter 5. This is a real KABE forecast
-carrying `TSRA`, and the hazard keeps its colour in the expansion so the eye lands on the same
-thing twice.
+**Tap a row and it opens.** The report is shown in full — nothing truncated, remarks and all —
+above every abbreviation it contains, including the structured groups: `042153Z` resolves through
+`Z`, `11005KT` through `KT`, `SCT035CB` through `SCT` and `CB`. Sourced from the NWS METAR/TAF card
+and FMH-1 chapter 5, and laid out in two columns once a report carries more terms than one column
+holds — this KDAB observation carries twenty-four.
+
+The hazard keeps its colour in the expansion, so `TS` is red in the glossary exactly as `-TSRA` was
+red in the raw text and the eye lands on the same thing twice.
+
+Tapping is what makes this reachable. `DECODE` on the key strip opens whichever report the list is
+scrolled to, which meant scrolling to an airport and then pressing a key; a tap goes straight there
+from the row that names it. Any tap on the decoded page goes back, and it returns to **the page of
+the list you left**, not to the top — the round trip through a report costs you nothing.
+
+This is one of only two body taps on the display — the other is
+[tapping an airport](#tapping-an-airport) — and both are the same bargain. Everywhere else the body
+is inert on purpose, for the reason under [Controls](#controls): the plan view must not change
+range because a hand steadied itself against the panel in turbulence. What these two have in
+common is that they are **aimed at something and reversible**: they change no selection, hide
+nothing, and the next tap undoes them. An aimed target with no affordance is one the pilot never
+finds, and the alternative is not "no gesture" but "a gesture nobody knows".
 
 ### Attitude
 
@@ -170,25 +215,6 @@ one lookup. What it needed was the chart to carry the **ICAO** identifier: METAR
 and the symbol says `MMU`, and deriving one from the other by prepending `K` is right most of the
 time and silently wrong sometimes — which here means showing another airport's weather.
 
-Tapping **inside an airspace boundary** shows what is stacked over that point instead — `D TEB
-SFC - 2500 ft`, `B JFK 1800 - 7000 ft`, lowest floor first, which is the order you meet them
-climbing. It prints the numbers and never says whether you are inside one: own-ship altitude comes
-from GPS, which scattered 356 ft while sitting still during the outdoor capture, or from a pressure
-sensor on the 29.92 datum. Airspace floors are MSL and compliance is your altimeter on local QNH,
-which this box does not have. The card gives you the number to check against it.
-
-**Tapping is the only thing the plan-view body responds to**, and it was inert on purpose: a hand
-steadying itself against the panel in turbulence must not change the range or the heading reference.
-A card changes no selection, hides no traffic, needs a tap within 18 px of a symbol to open, is
-dismissed by any next tap, and lapses by itself after 20 seconds. The reasoning is in
-[the design note](docs/airspace-and-airports.md#tapping-an-airport-and-the-rule-it-bends).
-
-The data is built by [`tools/chartdata`](tools/chartdata) from the FAA's own `US_Airport`,
-`Runways` and `Class_Airspace` layers, with communication frequencies from OurAirports — all
-public domain — see [docs/airspace-and-airports.md](docs/airspace-and-airports.md)
-for the measurements behind every threshold, including why a Class D arrives as 3,256 vertices and
-leaves as 84, and why the frequency file stores kilohertz.
-
 ### Controls
 
 The key strips are the primary interface. Labels are redrawn every frame and toggles are
@@ -232,8 +258,10 @@ the design to, and eight would be 53.3 px, which does not.
 
 | Gesture | Effect |
 | --- | --- |
-| Tap the body, weather page | page the list — lower half forward, upper half back |
-| Tap the body, plan view / AHRS | **nothing, on purpose** |
+| Tap a weather row | open that report, decoded |
+| Tap the decoded page | back to the page of the list you left |
+| Tap an airport or airspace, plan view | open its card |
+| Tap the plan-view body elsewhere, or the AHRS body | **nothing, on purpose** |
 | Tap the status bar | **nothing, on purpose** |
 | Two-finger tap | north-up ↔ track-up |
 
@@ -243,24 +271,32 @@ plan-view body used to cycle the range ring, until `RNG` existed. The status bar
 pages, until the page strip did — three 151 px keys need no fallback, and the old behaviour made
 the entire top edge of the panel a page-change target.
 
+The weather page used to page the list on a body tap, and that is gone too — for the third time
+the same test: what does the gesture cost if it fires by accident? Paging the list moves everything
+the pilot was reading. Opening a report changes no selection, hides nothing, and any next tap
+undoes it. So the two body taps that survive are the two that are **aimed at something and
+reversible**, and both are the only affordance their target has.
+
+A tap resolves to a row through the same geometry that drew it — `row_center` is used by both the
+drawing code and the hit test, so a tap cannot land on a row that is not where it was painted.
+That is not theoretical tidiness: this codebase has already been bitten by a soft-key test probing
+a hard-coded `y`, and by a bug where every touch resolved to the top of the screen.
+
 ### Regenerating the screenshots
 
-No Pi required — the offscreen presenter renders the identical frames headlessly.
+No Pi required — the offscreen presenter renders the identical frames headlessly. **Run these from
+the repo root**: with no `--chart`, the display looks beside the binary and then for the repo copy,
+and from anywhere else it logs `no chart file found` and draws no airports.
 
 ```sh
-cargo build --release -p avionics -p replay
+cargo build --release -p avionics -p replay -p mock-stratux
 ./target/release/replay synth /tmp/synth.jsonl --duration 240 --targets 10 --conflict --seed 7
 
+# frame 320 is the pair in "the two culls" — same seed, same frame, same scene both ways:
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/plan --frames 400 --dump-every 80 --range 10
 ./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
     --out /tmp/shots/plan-all --frames 400 --dump-every 80 --range 10 --alt-filter all
-./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
-    --out /tmp/shots/wx   --frames 400 --dump-every 80 --weather-page
-./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
-    --out /tmp/shots/wxd  --frames 400 --dump-every 80 --weather-page --decode
-./target/release/avionics --replay /tmp/synth.jsonl --speed 8 --offscreen \
-    --out /tmp/shots/ahrs --frames 400 --dump-every 80 --ahrs-page
 
 # the map layer — the synth session starts at Broomfield CO, under the Denver Class B:
 ./target/release/avionics --replay /tmp/synth.jsonl --offscreen \
@@ -276,18 +312,49 @@ cargo build --release -p avionics -p replay
     --alt-filter all
 ```
 
-The weather and attitude shots above come from `--internet` rather than from synth, because real
-reports and a real airborne state beat a fixture:
+The weather and attitude shots come from `--internet` rather than from synth, because real reports
+and a real airborne state beat a fixture. New York for traffic density, and wherever the weather
+actually is for the weather page — the shots above are Daytona Beach on an afternoon with
+thunderstorms on the field:
 
 ```sh
-cargo run --release -p mock-stratux -- --internet --fly 090@110 &
-./target/release/avionics --host 127.0.0.1 --port 8080 --offscreen \
-    --out /tmp/shots/net --frames 240 --dump-every 230 --range 20
+./target/release/mock-stratux --internet --lat 40.7784 --lon -74.3343 --radius 80 --fly 090@110 &
+./target/release/avionics --host 127.0.0.1 --port 8080 --offscreen --range 20 \
+    --out /tmp/shots/nyc     --frames 400 --dump-every 399
+./target/release/avionics --host 127.0.0.1 --port 8080 --offscreen --range 20 --alt-filter all \
+    --out /tmp/shots/nyc-all --frames 400 --dump-every 399
+./target/release/avionics --host 127.0.0.1 --port 8080 --offscreen --ahrs-page \
+    --out /tmp/shots/ahrs    --frames 600 --dump-every 599
+
+./target/release/mock-stratux --internet --lat 29.1799 --lon -81.0581 --radius 45 --port 8092 &
+./target/release/avionics --host 127.0.0.1 --port 8092 --offscreen --weather-page \
+    --out /tmp/shots/wx  --frames 2000 --dump-every 1999
+./target/release/avionics --host 127.0.0.1 --port 8092 --offscreen --weather-page --decode \
+    --out /tmp/shots/wxd --frames 2000 --dump-every 1999
 ```
+
+Three things about those weather runs, all learned the hard way:
+
+- **`--port 8080`, not the default.** The display defaults to port 80, which is where a real
+  Stratux lives; the mock listens on 8080. Get this wrong and you render `STRATUX OFFLINE` and
+  spend a while wondering why.
+- **The frame counts are large because weather has to accumulate.** FIS-B broadcasts one product at
+  a time, and the mock faithfully does the same, so the page fills over minutes rather than
+  arriving in one frame. 2000 frames at the weather page's 8 fps is about four minutes, which was
+  enough for 19 of the 19 products on offer. A short run shows a nearly empty page, correctly.
+- **Radius decides what the first page looks like.** Sorting is product-then-distance, so a radius
+  wide enough to find more than fifteen METARs puts every TAF on page two. 45 nm around Daytona
+  gives fifteen METARs and four TAFs, which is what fits.
+
+To pick a *scrolled* page, or a report other than the nearest, there is no flag — those are taps,
+and the point of the tap work was that they should be.
 
 The plan-view shot with the NEXRAD underlay stays on synth: no free feed publishes FIS-B blocks.
 
-Output is PPM; convert with any of `pnmtopng`, ImageMagick, or Pillow.
+Output is PPM; convert with any of `pnmtopng`, ImageMagick, or Pillow. There is no `convert` on
+every box — `python3 -c "from PIL import Image; Image.open('a.ppm').save('a.png')"` always works.
+`--out` names a **directory** of frames, not a file; passing `--out shot.png` fails with
+`File exists`.
 
 `captures/` is gitignored — recordings are large and specific to one trip — so the last command
 needs a session pulled off the Pi first. See
@@ -363,7 +430,7 @@ device.
 | — | Soft-key strip + AHRS attitude page | **on the panel**; attitude sign conventions verified by tilting the box |
 | M7 | Airports + airspace map layer | **on the panel** — 18,108 airports, 1,408 Class B/C/D polygons, runway ticks, tap-to-inspect with frequencies and station weather; all from the FAA's own layers on one AIRAC cycle, measured on the real VC4 under GLES 2.0 |
 
-389 tests passing, clippy clean.
+395 tests passing, clippy clean.
 
 The honest summary: the *stack* is proven end to end on the target — cross-compile, KMS, GLES2,
 panel, touch, all five Stratux sockets, live 1090 MHz traffic, and frame cost measured on a
@@ -403,6 +470,44 @@ deploy/                 install, hardening and on-hardware test harnesses
 holds — so you cannot iterate on UI code on the dev machine against a real KMS surface. One trait,
 three implementations (KMS, winit window, offscreen), and everything above it sees only a
 `femtovg::Canvas`.
+
+### How a frame gets to the panel
+
+Two halves that share one mutex and nothing else.
+
+**The ingest half** is five Tokio tasks, one per Stratux socket, each with its own reconnect loop
+and its own staleness clock. Every decoded message becomes a `SourceEvent`, and a single fold
+applies it to **`AppState`** — the display's whole model of the world: own-ship, a map of targets
+by ICAO address, weather keyed by station, NEXRAD blocks, radio counters. Nothing in here knows
+about pixels, and nothing in here is derived from what is on screen.
+
+**The render half** is one thread that never blocks on the network:
+
+1. Drain any completed AHRS cage request (it runs on the Tokio side and answers through a channel,
+   so a slow Stratux cannot stall a frame).
+2. Retire the inspect card if its 20 seconds are up.
+3. Wait until this page's next frame is due — **polling touch throughout**, so a tap is noticed at
+   input rate even on the weather page's 8 fps budget — then apply whatever gestures arrived to
+   **`ViewState`**.
+4. Lock `AppState`, draw, unlock.
+5. Block on the DRM page flip, which is what actually paces the loop.
+
+The split between the two states is the load-bearing part. `AppState` is what was *received*;
+`ViewState` is what the pilot has *selected* — page, range, orientation, altitude band, map layers,
+weather scroll position, whether a report is expanded. Drawing is a function of the pair plus
+`now`, and holds no state of its own, which is why every page can be rendered headlessly from a
+recording and why the interaction tests need neither a canvas nor a device.
+
+`now` matters more than it looks. Dead reckoning happens **at draw time**, not on receipt: a target
+last heard 1.2 s ago is drawn 1.2 s along its reported track, capped at 3 s and dimmed while
+coasting. That is what keeps the picture alive at 30 fps against ~1 Hz updates without inventing a
+separate simulation to go stale in its own way.
+
+Drawing order inside a frame is deliberate and is enforced by the layering, not by convention:
+page content first, then the status bar, then the footer — the footer **after** the page because
+the NEXRAD underlay is one quad reaching the bottom edge of the panel and would paint over
+anything drawn first — and both key strips last of all. The page strip especially: it is the only
+way to change pages, so it must survive a drawing bug anywhere else.
 
 ### Which Stratux socket does what
 
@@ -934,6 +1039,12 @@ replay, per page:
 | AHRS (uncapped) | 60 fps | **2.72 ms** | 68.3 ms (frame 1) | **6.7 ms** | 16.3% |
 | Weather, decoded | 8 fps | **3.68 ms** | 141.7 ms (frame 1) | **7.4 ms** | 2.9% |
 | Weather, list | 8 fps | **4.09 ms** | 65.8 ms (frame 1) | **8.5 ms** | 3.3% |
+
+**The two weather rows predate the table**, which was built on 2026-08-04 and has not been timed on
+the Pi. The list now measures every heading on the page to place its columns — about fifteen extra
+`measure_text` calls a frame. That is CPU-side shaping rather than GL work, and against a 4.09 ms
+frame at 8 fps it should disappear, but "should" is not a measurement and this table only carries
+measurements.
 
 The map layer, measured the same way on 2026-08-03 but against the outdoor capture at 20 nm, so
 own-ship and the New York Class B are real:

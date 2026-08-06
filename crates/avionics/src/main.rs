@@ -587,7 +587,7 @@ fn run_window(_args: &Args, _state: Shared) -> Result<()> {
 #[cfg(feature = "desktop")]
 const DESKTOP_KEYS: &str = "\
 Interactive harness
-  left click     tap        (status bar switches page; body cycles range / scrolls weather)
+  left click     tap        (soft keys; a weather row to decode it; an airport for its card)
   right click    two-finger tap (north-up <-> track-up)
   r / R          range up / down
   a              cycle the vertical filter
